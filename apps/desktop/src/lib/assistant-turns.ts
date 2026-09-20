@@ -44,6 +44,7 @@ export type SubagentRun = {
 
 export type AssistantTurnPart =
   | { kind: "message"; message: UiMessage }
+  | { kind: "steering"; message: UiMessage }
   | {
       kind: "activity";
       items: AssistantActivityItem[];
@@ -55,6 +56,8 @@ export type AssistantTurnEntry = {
   id: string;
   anchorId?: string;
   parts: AssistantTurnPart[];
+  /** Timestamp of the user message that initiated this turn, when loaded. */
+  startedAt?: string;
 };
 
 export type TranscriptEntry =
@@ -200,14 +203,17 @@ export function buildTranscriptEntries(
   }
   const entries: TranscriptEntry[] = [];
   let turn: AssistantTurnEntry | undefined;
-
+  let turnStartedAt: string | undefined;
+  let canStartTurnFromUser = false;
   const ensureTurn = (message: UiMessage) => {
     if (turn) return turn;
     turn = {
       kind: "assistant-turn",
       id: message.id,
       parts: [],
+      ...(turnStartedAt ? { startedAt: turnStartedAt } : {}),
     };
+    canStartTurnFromUser = false;
     entries.push(turn);
     return turn;
   };
@@ -229,8 +235,23 @@ export function buildTranscriptEntries(
   };
 
   const appendMessage = (message: UiMessage) => {
+    if (message.role === "user" && message.steering === true) {
+      if (turn || canStartTurnFromUser) {
+        ensureTurn(message).parts.push({ kind: "steering", message });
+        return;
+      }
+      // A paged transcript can begin after the active turn's earlier rows. Do
+      // not infer that missing parent; keep the supplemental row visible as a
+      // normal user boundary and let later output form a new loaded turn.
+      turnStartedAt = message.createdAt;
+      canStartTurnFromUser = true;
+      entries.push({ kind: "message", message });
+      return;
+    }
     if (message.role === "user" || message.role === "system") {
       turn = undefined;
+      turnStartedAt = message.role === "user" ? message.createdAt : undefined;
+      canStartTurnFromUser = message.role === "user";
       entries.push({ kind: "message", message });
       return;
     }
@@ -268,6 +289,8 @@ export function buildTranscriptEntries(
     // The row is a divider, so whatever turn it lands inside ends there and the
     // next assistant fragment opens a new one.
     turn = undefined;
+    turnStartedAt = undefined;
+    canStartTurnFromUser = false;
     for (const mark of marks) entries.push({ kind: "compaction", mark });
   }
 
@@ -278,7 +301,7 @@ export function buildTranscriptEntries(
       const next = entry.parts[index + 1];
       if (
         part.kind === "activity" &&
-        next?.kind === "message" &&
+        (next?.kind === "message" || next?.kind === "steering") &&
         !part.items.some((item) => item.message.id === next.message.id)
       ) {
         part.endedAt = next.message.createdAt;
@@ -364,6 +387,9 @@ function reuseTurnPart(
   if (previous.kind === "message" && next.kind === "message") {
     return previous.message === next.message ? previous : next;
   }
+  if (previous.kind === "steering" && next.kind === "steering") {
+    return previous.message === next.message ? previous : next;
+  }
   if (previous.kind === "activity" && next.kind === "activity") {
     if (previous.endedAt !== next.endedAt) {
       const items = next.items.map((item, index) =>
@@ -411,6 +437,7 @@ function reuseTranscriptEntry(
     );
     if (
       previous.anchorId === next.anchorId &&
+      previous.startedAt === next.startedAt &&
       parts.length === previous.parts.length &&
       parts.every((part, index) => part === previous.parts[index])
     ) {
@@ -451,20 +478,24 @@ export function assistantTurnMessages(
 }
 
 /**
- * The rows these entries actually render, in transcript order.
+ * The messages these entries expose to the minimap, in transcript order.
  *
  * The minimap resolves a click by finding the marker's `data-minimap-id` node in
  * the scroller, so it must be built from the mounted entries rather than from
- * every loaded message (D261). Fed the full set while the transcript window
- * withholds older rows, it would draw dashes whose click target does not exist
- * and jump nowhere.
+ * every loaded message (D261). Embedded steering renders inside the turn process
+ * without its own anchor; a standalone leading steering remains a top-level
+ * message entry and is included.
  */
 export function transcriptEntryMessages(
   entries: readonly TranscriptEntry[],
 ): UiMessage[] {
   return entries.flatMap((entry) => {
     if (entry.kind === "message") return [entry.message];
-    if (entry.kind === "assistant-turn") return assistantTurnMessages(entry);
+    if (entry.kind === "assistant-turn") {
+      return entry.parts.flatMap((part) =>
+        part.kind === "message" ? [part.message] : [],
+      );
+    }
     return [];
   });
 }

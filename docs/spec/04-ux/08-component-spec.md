@@ -814,12 +814,25 @@ reading surface of the workstation.
 
 ### Turn process and thinking display
 
-Both Detailed and Compact project each loaded assistant turn into one whole-process
+Both display modes project each loaded assistant turn into one whole-process
 disclosure containing reasoning, tools, hosted searches and intermediate assistant
 text in transcript order. The trailing answer streams outside that disclosure;
 later activity can reclassify provisional answer text into the process without
 changing the stored message. Assistant errors and stopped trailing partial answers
 also stay outside it. User/system messages and compaction boundaries are unchanged.
+A human user message carrying the persisted `steering: true` marker belongs to the
+loaded task context and stays in order inside its process. It does not settle
+preceding work or create another task summary. Completion folds the supplemental
+bubble and work on both sides together; the final answer remains outside. Unmarked
+messages, including queued new tasks and legacy rows, remain new boundaries.
+The queue's **Send now** action gracefully stops the active turn and starts a
+new turn; it does not set `steering` or persist a parent-task link. It therefore
+remains separate. Alt+Enter is the active-turn supplemental-input path.
+Leading supplemental rows with no loaded task context remain visible rather than
+being attached to unrelated history. Search can reveal folded supplements, and
+their text/attachments are excluded from assistant answer and usage aggregation.
+Grouped supplements share the task's visible minimap anchor instead of adding
+markers for hidden rows. Standalone leading supplements retain their own marker.
 
 Within the process, an ordinary activity group represents one contiguous
 tool/search/thinking segment between progress paragraphs. It renders a group header
@@ -827,12 +840,17 @@ only when the current mode has two or more visible items. A singleton uses its i
 disclosure directly, compact-hidden thinking never creates an empty wrapper, and
 the existing Task topology remains the container for delegated work.
 
-Detailed starts active and completed whole-process disclosures open. The ordinary
-group owning the active execution segment starts open, then closes on completion
-only if untouched; other completed groups start closed. Compact starts the process
-and ordinary groups closed. Its untouched active process remains open when any
-failed or denied tool has been recorded, through later successful recovery, and
-closes on completion if still untouched. Group headers summarize count, running
+The whole process starts expanded while active. Completion resets it to collapsed,
+including after active interaction or failed/denied tool calls, by using a new
+process identity. The header shows a failure/issue marker only while expanded;
+completed manual reopening and new search reveals remain effective. The header
+shows elapsed time and a tool count. Elapsed time starts at the initiating user
+message when loaded, otherwise at the first valid assistant/tool timestamp, and
+ends at the latest recorded message/tool completion.
+
+The ordinary group owning the active execution segment starts open in Detailed,
+then closes on completion only if untouched; other completed groups start closed.
+Compact starts ordinary groups closed. Group headers summarize count, running
 state and issue count without treating a failed child as a failed turn.
 
 In Detailed, only the literal final item of the last activity group receives the
@@ -841,20 +859,64 @@ Failed and denied rows remain closed, and a final thinking item does not cause a
 backward scan for an earlier tool. Compact keeps all tool/search payloads closed and
 suppresses reasoning text and excerpts; only its active thinking indicator remains.
 
-Whole process, group and item are independent controls. Closing an ancestor keeps
-descendant choices and reopening restores them; opening a parent never expands all
-children. User interaction with a child claims its ancestors without toggling them,
-so completion cannot close around opened, focused or selected content. Choices use
-stable turn/group/item identities and remain while the retained session pane lives,
-including mode changes and row remounts; pane eviction, deletion or renderer restart
-reapplies defaults rather than persisting disclosure state to messages or settings.
+Nested group and item controls are independent of the whole-process identity.
+Closing an ancestor keeps descendant choices and reopening restores them; opening
+a parent never expands all children. User interaction with a child claims its
+group without toggling it. Whole-process completion still folds because it uses
+a new identity. Nested choices remain while the retained session pane lives,
+including mode changes and row remounts; pane eviction, deletion or renderer
+restart reapplies defaults rather than persisting disclosure state to messages
+or settings.
 
 Search/navigation reveals the process and the activity group that own the named
 message, and applies each reveal request once. Item-level targeting is not part
-of this change. Compact reasoning stays hidden until
-the user selects Detailed. Permission, question, plan/goal approval and other
-pending action cards remain reachable outside a hidden process. See
+of this change. Compact reasoning stays hidden until the user selects Detailed.
+Permission, question, plan/goal approval and other pending action cards remain
+reachable outside a hidden process. See
 [ADR turn-process-and-thinking-display](../../adr/turn-process-and-thinking-display.md).
+
+### Task timestamp and recorded file summary
+
+User messages show a semantic `time` above the bubble, formatted in the current
+UI locale and local timezone from the persisted `createdAt`. Invalid timestamps
+are omitted. Optimistic messages use their send timestamp until acknowledged.
+
+An inactive assistant turn shows a file summary below the response when its
+loaded top-level tool messages contain workspace Write/Edit or captured Bash
+review snapshots. The localized heading reads "Edited N files this turn"
+(Simplified Chinese: "本轮编辑 N 个文件"). Up to five files are shown in full.
+When there are more than five files, the summary initially shows the first three
+and offers a show-more control with the remaining count; collapsing restores
+those three rows. Clicking a path opens the right work
+panel's Review tab and displays that file's records from this visual turn with
+their diffs expanded and existing hash-guarded rollback controls. The chat list
+does not expand inline review cards. Selection identifies snapshots rather than
+copying messages, so rollback updates remain live; another session or another
+turn's edits to the same path cannot leak into the selected file view.
+Snapshot identities are deduplicated. Counts describe recorded edit operations,
+not a net start-to-end Git diff; repeated edits retain their individual evidence.
+Rolled-back records remain inspectable and are excluded from active edit totals.
+
+The summary preserves its rounded outer border and padded header/list regions,
+using the transcript's existing tool/review colors, typography and hover states.
+Its compact icon and count title sit in the header, with totals alongside,
+separated from the file list by spacing and a subtle divider. Each row centers its path and
+counts vertically within its hover target. At narrow widths, paths and the title
+truncate while counts stay visible, without overlapping the file list.
+
+The source is persisted message-owned review evidence, never the current dirty
+worktree or artifact index. Failed Write/Edit and scratch writes add no evidence;
+Bash mutations captured before nonzero exit or interruption remain reviewable.
+Binary/oversized records retain their existing review limits. Bash results use
+`reviews` plus explicit complete/partial/unavailable capture metadata. Capture
+metadata remains internal: the chat card has no scope/disclaimer subtitle or
+empty unavailable card. With no file records it is absent. Nested delegates
+are not attributed to the parent summary.
+Existing paging and compaction boundaries can yield partial summaries: only the
+loaded visual turn is grouped, without claiming a complete durable host-turn
+audit. Loading more history updates the projection. The additive tool details
+need no schema or protocol version change. See
+[Shell workspace review evidence](../../adr/shell-workspace-review-evidence.md).
 
 ### 4.4 States
 
@@ -867,7 +929,7 @@ pending action cards remain reachable outside a hidden process. See
 | Session switch | A first-opened session paints at its latest record; a revisited pane paints at its own retained position. Bounded first commit and full-history expansion show the same position: no post-paint height correction may shift the visible rows, in either direction |
 | Turn start (send / retry / regenerate) | Re-pins and positions the latest content before paint, even if the user had scrolled up; the later persisted user-message event does not flash the transcript at its top, and the composer collapse / indicator layout clamps during the send never release follow mode |
 | Idle (after stream) | Auto-scroll unlocked; user can scroll freely |
-| Message-scoped review snapshot | Each successful workspace Write/Edit tool row is followed by one compact InlineReviewCard carrying that message's added/modified/deleted status and explicit addition/deletion totals. It renders as a single flat list row on the tool-row rhythm — disclosure caret, Git-style status letter (`A`/`M`/`D`), path, addition/deletion counts — with no card border, status rail, icon plate, or status pill; hover fill is the only row chrome, and a rolled-back change is struck through. Its hunks sit behind an expandable disclosure: every review card (inline and in the Review tab) is collapsed by default, and the user expands it on demand. The card remains after a Git commit, never becomes a bottom/global entry, and offers hash-guarded rollback without leaking into another session's transcript. |
+| Message-scoped review snapshot | Each successful workspace Write/Edit tool row and each captured Bash mutation owns a compact review card with added/modified/deleted status and addition/deletion totals. The flat row contains a disclosure caret, Git-style status letter, path and counts; a rolled-back record is struck through. Inline cards and the unfiltered Review history default to collapsed. Clicking a file in the turn summary opens its filtered right-side Review view with the matching diffs expanded; repeated navigation reopens collapsed target records. Historical evidence survives a Git commit, and per-snapshot rollback remains hash-guarded and session-owned. The chat summary lists paths without nesting duplicate diff cards or creating a global rollback action. |
 
 ### 4.5 Accessibility
 

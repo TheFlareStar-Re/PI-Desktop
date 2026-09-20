@@ -26,32 +26,34 @@ export function TurnProcess({
   turnId,
   processParts,
   turnParts,
-  delegationStatuses,
+  startedAt,
   isActive,
+  delegationStatuses,
   children,
 }: {
   turnId: string;
   processParts: readonly AssistantTurnPart[];
   turnParts: readonly AssistantTurnPart[];
+  startedAt?: string;
   isActive: boolean;
   delegationStatuses?: ReadonlyMap<string, SubagentOutcome>;
   children: ReactNode;
 }) {
-  const { t } = useTranslation();
-  const mode = useAppStore((state) => resolveThinkingDisplayMode(state.settings?.thinkingDisplayMode));
-  const search = useContext(TranscriptSearchContext);
-  const revealRequest = search && processContainsMessage(processParts, search.messageId)
-    ? search.requestId : undefined;
-  const summary = activitySummary(processParts.flatMap((part) => part.kind === "activity" ? part.items : []), delegationStatuses);
-  const thinkingNow = isTurnThinking(turnParts, isActive);
-  const disclosure = useAutomaticDisclosure(
-    shouldAutoOpenTurnProcess(mode, isActive, summary.issues > 0),
-    revealRequest,
-    disclosureKey("turn", turnId),
+  const mode = useAppStore((state) =>
+    resolveThinkingDisplayMode(state.settings?.thinkingDisplayMode),
   );
-  const detailsId = useId();
+  const search = useContext(TranscriptSearchContext);
+  const revealRequest =
+    search && processContainsMessage(processParts, search.messageId)
+      ? search.requestId
+      : undefined;
+  const summary = activitySummary(
+    processParts.flatMap((part) => (part.kind === "activity" ? part.items : [])),
+    delegationStatuses,
+  );
+  const thinkingNow = isTurnThinking(turnParts, isActive);
   const [now, setNow] = useState(Date.now);
-  const { startedAt, endedAt } = turnProcessTiming(turnParts);
+  const { startedAt: timingStart, endedAt } = turnProcessTiming(turnParts, startedAt);
   useEffect(() => {
     if (!isActive) return;
     setNow(Date.now());
@@ -59,9 +61,55 @@ export function TurnProcess({
     return () => window.clearInterval(timer);
   }, [isActive]);
   if (visibleProcessSteps(processParts, mode, isActive) === 0) return null;
-  const seconds = startedAt === undefined ? 0 : Math.max(
-    0, Math.floor(((isActive ? now : (endedAt ?? startedAt)) - startedAt) / 1000),
+  const seconds =
+    timingStart === undefined
+      ? 0
+      : Math.max(
+          0,
+          Math.floor(((isActive ? now : (endedAt ?? timingStart)) - timingStart) / 1000),
+        );
+  const phase = isActive ? "active" : "settled";
+  return (
+    <TurnProcessDisclosure
+      key={phase}
+      identity={disclosureKey("turn", turnId, phase)}
+      automaticOpen={shouldAutoOpenTurnProcess(mode, isActive, summary.issues > 0)}
+      revealRequest={revealRequest}
+      issueCount={summary.issues}
+      toolCount={summary.tools}
+      thinkingNow={thinkingNow}
+      isActive={isActive}
+      seconds={seconds}
+    >
+      {children}
+    </TurnProcessDisclosure>
   );
+}
+
+function TurnProcessDisclosure({
+  identity,
+  automaticOpen,
+  revealRequest,
+  issueCount,
+  toolCount,
+  thinkingNow,
+  isActive,
+  seconds,
+  children,
+}: {
+  identity: string;
+  automaticOpen: boolean;
+  revealRequest?: number;
+  issueCount: number;
+  toolCount: number;
+  thinkingNow: boolean;
+  isActive: boolean;
+  seconds: number;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const disclosure = useAutomaticDisclosure(automaticOpen, revealRequest, identity);
+  const detailsId = useId();
   return (
     <section className={`turn-process${disclosure.open ? " open" : ""}${isActive ? " active" : ""}`}>
       <button
@@ -72,22 +120,33 @@ export function TurnProcess({
         aria-controls={detailsId}
         onClick={disclosure.toggle}
       >
-        <span className="tool-activity-icon" aria-hidden><IconSparkles size={14} /></span>
-        <span className={`tool-activity-label${isActive ? " running" : ""}`}>
-          {t(isActive ? thinkingNow ? "chat.thinkingFor" : "chat.processingFor" : "chat.processedFor", {
-            time: formatToolDuration(seconds),
-          })}
+        <span className="tool-activity-icon" aria-hidden>
+          <IconSparkles size={14} />
         </span>
-        {summary.issues > 0 ? (
+        <span className={`tool-activity-label${isActive ? " running" : ""}`}>
+          {t(
+            isActive
+              ? thinkingNow
+                ? "chat.thinkingFor"
+                : "chat.processingFor"
+              : "chat.processedFor",
+            { time: formatToolDuration(seconds) },
+          )}
+        </span>
+        {issueCount > 0 && disclosure.open ? (
           <span className="turn-process-error">
             <IconCircleAlert size={14} aria-hidden />
-            {t("chat.activityFailures", { count: summary.issues })}
+            {t("chat.activityFailures", { count: issueCount })}
           </span>
         ) : null}
-        {summary.tools > 0 ? (
-          <span className="tool-activity-count">{t("chat.processTools", { count: summary.tools })}</span>
+        {toolCount > 0 ? (
+          <span className="tool-activity-count">
+            {t("chat.processTools", { count: toolCount })}
+          </span>
         ) : null}
-        <span className="tool-activity-caret" aria-hidden><IconChevronRight size={12} /></span>
+        <span className="tool-activity-caret" aria-hidden>
+          <IconChevronRight size={12} />
+        </span>
       </button>
       <div
         ref={disclosure.bodyRef}

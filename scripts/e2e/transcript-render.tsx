@@ -1,3 +1,4 @@
+import { runTurnFileSummaryProbe } from "./turn-file-summary";
 import { turnProcessProbe } from "./turn-process";
 import { transcriptStatusProbe } from "./transcript-status";
 import { createRoot } from "react-dom/client";
@@ -53,7 +54,7 @@ globalThis.transcriptRenderProbe = async () => {
     flushSync(() =>
       root.render(
         <I18nextProvider i18n={i18n}>
-          <AssistantTurn entry={entry} isActive />
+          <AssistantTurn entry={entry} sessionId={undefined} isActive />
         </I18nextProvider>,
       ),
     );
@@ -230,6 +231,7 @@ globalThis.transcriptRenderProbe = async () => {
       taskLifecycleUpdated: true,
       taskTimingUpdated: true,
       turnProcess: await turnProcessProbe(),
+      turnFiles: await runTurnFileSummaryProbe(),
       textUpdateDurationMs,
     };
   } finally {

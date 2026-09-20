@@ -267,10 +267,15 @@ function TranscriptBody({
             // view, which is exactly the jitter this avoids.
             <div className="transcript-hydration-spacer" aria-hidden />
           ) : null}
-          <TranscriptHistory entries={historyEntries} isRunning={isRunning} />
+          <TranscriptHistory
+            entries={historyEntries}
+            sessionId={sessionId}
+            isRunning={isRunning}
+          />
           {tailEntry ? (
             <TranscriptTail
               entry={tailEntry}
+              sessionId={sessionId}
               isRunning={isRunning}
               isActive={transcriptRunning && tailEntry.kind === "assistant-turn"}
               runtimeActivity={specializedActivity}

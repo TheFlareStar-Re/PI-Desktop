@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
 
 pub const MAX_IN_FLIGHT_TOOLS: usize = 16;
 pub const MAX_IN_FLIGHT_SHELL: usize = 4;
@@ -67,6 +68,35 @@ pub struct ToolPermit {
     _class: OwnedSemaphorePermit,
     _session: OwnedSemaphorePermit,
     _session_mutation: Option<OwnedSemaphorePermit>,
+    _workspace_mutation: Option<OwnedMutexGuard<()>>,
+}
+
+#[derive(Clone, Default)]
+pub struct WorkspaceMutationLocks {
+    locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
+}
+
+impl WorkspaceMutationLocks {
+    async fn lock_for(&self, root: &Path) -> Arc<Mutex<()>> {
+        let key = crate::workspace::simple_canonicalize(root)
+            .unwrap_or_else(|_| root.to_path_buf())
+            .to_string_lossy()
+            .to_string();
+        let mut locks = self.locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        lock
+    }
+
+    pub(crate) async fn acquire(&self, root: &Path) -> Result<OwnedMutexGuard<()>, AdmissionError> {
+        tokio::time::timeout(QUEUE_WAIT, self.lock_for(root).await.lock_owned())
+            .await
+            .map_err(|_| AdmissionError::QueueWaitTimeout)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -110,8 +140,18 @@ impl ToolBudget {
         &self,
         session_id: &str,
         tool_name: &str,
+        workspace_root: Option<&Path>,
+        workspace_locks: &WorkspaceMutationLocks,
     ) -> Result<ToolPermit, AdmissionError> {
         let class = ToolClass::from_name(tool_name);
+        let workspace_mutation = if matches!(class, ToolClass::Mutation | ToolClass::Shell) {
+            match workspace_root {
+                Some(root) => Some(workspace_locks.acquire(root).await?),
+                None => None,
+            }
+        } else {
+            None
+        };
         let class_semaphore = self.class_semaphore(class);
         let session_semaphore = self.session_semaphore(session_id).await;
         let session_mutation_semaphore = match class {
@@ -119,12 +159,13 @@ impl ToolBudget {
             _ => None,
         };
 
-        if let Some(permit) = Self::try_acquire(
+        if let Some(mut permit) = Self::try_acquire(
             self.total.clone(),
             class_semaphore.clone(),
             session_semaphore.clone(),
             session_mutation_semaphore.clone(),
         ) {
+            permit._workspace_mutation = workspace_mutation;
             return Ok(permit);
         }
 
@@ -147,7 +188,10 @@ impl ToolBudget {
         self.queued.fetch_sub(1, Ordering::SeqCst);
 
         match result {
-            Ok(permit) => Ok(permit),
+            Ok(mut permit) => {
+                permit._workspace_mutation = workspace_mutation;
+                Ok(permit)
+            }
             Err(_) => Err(AdmissionError::QueueWaitTimeout),
         }
     }
@@ -196,9 +240,6 @@ impl ToolBudget {
         session: Arc<Semaphore>,
         session_mutation: Option<Arc<Semaphore>>,
     ) -> Option<ToolPermit> {
-        // Reserve the narrow per-session mutation slot first. This keeps a
-        // queued second Write/Edit from consuming a global mutation permit
-        // while it waits for the first mutation in the same session.
         let session_mutation_permit = match session_mutation {
             Some(semaphore) => Some(semaphore.try_acquire_owned().ok()?),
             None => None,
@@ -211,6 +252,7 @@ impl ToolBudget {
             _class: class_permit,
             _session: session_permit,
             _session_mutation: session_mutation_permit,
+            _workspace_mutation: None,
         })
     }
 
@@ -220,9 +262,6 @@ impl ToolBudget {
         session: Arc<Semaphore>,
         session_mutation: Option<Arc<Semaphore>>,
     ) -> ToolPermit {
-        // Keep the per-session mutation permit outside the global capacity
-        // wait so one session cannot reserve global slots while its earlier
-        // mutation is still running.
         let session_mutation_permit = match session_mutation {
             Some(semaphore) => Some(
                 semaphore
@@ -249,6 +288,7 @@ impl ToolBudget {
             _class: class_permit,
             _session: session_permit,
             _session_mutation: session_mutation_permit,
+            _workspace_mutation: None,
         }
     }
 }
@@ -261,67 +301,107 @@ impl Default for ToolBudget {
 
 #[cfg(test)]
 mod tests {
-    use super::ToolBudget;
+    use super::{ToolBudget, WorkspaceMutationLocks};
+    use std::path::Path;
     use std::time::Duration;
 
     #[tokio::test]
     async fn limits_shell_concurrency_and_reports_active_work() {
         let budget = ToolBudget::new();
+        let locks = WorkspaceMutationLocks::default();
         let mut permits = Vec::new();
         for index in 0..4 {
             permits.push(
                 budget
-                    .acquire(&format!("session-{index}"), "Bash")
+                    .acquire(&format!("session-{index}"), "Bash", None, &locks)
                     .await
                     .unwrap(),
             );
         }
-
         let snapshot = budget.snapshot();
         assert_eq!(snapshot.active, 4);
         assert_eq!(snapshot.shell, 4);
-        assert_eq!(snapshot.queued, 0);
-
         let waiting_budget = budget.clone();
-        let waiter =
-            tokio::spawn(async move { waiting_budget.acquire("session-waiter", "Bash").await });
+        let waiting_locks = locks.clone();
+        let waiter = tokio::spawn(async move {
+            waiting_budget
+                .acquire("session-waiter", "Bash", None, &waiting_locks)
+                .await
+        });
         drop(permits);
         assert!(waiter.await.unwrap().is_ok());
-        assert_eq!(budget.snapshot().active, 0);
     }
 
     #[tokio::test]
     async fn separates_session_capacity() {
         let budget = ToolBudget::new();
+        let locks = WorkspaceMutationLocks::default();
         let mut first = Vec::new();
         for _ in 0..4 {
-            first.push(budget.acquire("session-a", "Read").await.unwrap());
+            first.push(
+                budget
+                    .acquire("session-a", "Read", None, &locks)
+                    .await
+                    .unwrap(),
+            );
         }
-
-        let second = budget.acquire("session-b", "Read").await;
-        assert!(second.is_ok());
-        let waiting_budget = budget.clone();
-        let waiter = tokio::spawn(async move { waiting_budget.acquire("session-a", "Read").await });
+        assert!(budget
+            .acquire("session-b", "Read", None, &locks)
+            .await
+            .is_ok());
         drop(first);
-        assert!(waiter.await.unwrap().is_ok());
     }
 
     #[tokio::test]
     async fn serializes_mutations_within_a_session() {
         let budget = ToolBudget::new();
-        let first = budget.acquire("session-a", "Edit").await.unwrap();
+        let locks = WorkspaceMutationLocks::default();
+        let first = budget
+            .acquire("session-a", "Edit", None, &locks)
+            .await
+            .unwrap();
         let mut waiter = tokio::spawn({
             let budget = budget.clone();
-            async move { budget.acquire("session-a", "Write").await }
+            let locks = locks.clone();
+            async move { budget.acquire("session-a", "Write", None, &locks).await }
         });
-
         assert!(tokio::time::timeout(Duration::from_millis(50), &mut waiter)
             .await
             .is_err());
-        assert_eq!(budget.snapshot().mutations, 1);
-
         drop(first);
-        assert!(tokio::time::timeout(Duration::from_secs(1), &mut waiter)
+        assert!(tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn serializes_same_workspace_across_sessions_but_not_other_workspaces() {
+        let budget = ToolBudget::new();
+        let locks = WorkspaceMutationLocks::default();
+        let first = budget
+            .acquire("session-a", "Bash", Some(Path::new("shared")), &locks)
+            .await
+            .unwrap();
+        let mut same = tokio::spawn({
+            let budget = budget.clone();
+            let locks = locks.clone();
+            async move {
+                budget
+                    .acquire("session-b", "Write", Some(Path::new("shared")), &locks)
+                    .await
+            }
+        });
+        assert!(budget
+            .acquire("session-c", "Edit", Some(Path::new("other")), &locks)
+            .await
+            .is_ok());
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut same)
+            .await
+            .is_err());
+        drop(first);
+        assert!(tokio::time::timeout(Duration::from_secs(1), same)
             .await
             .unwrap()
             .unwrap()

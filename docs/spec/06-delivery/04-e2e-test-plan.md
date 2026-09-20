@@ -14122,32 +14122,97 @@ plugin-form fixtures in an isolated temporary directory at runtime.
 - **Preconditions:** A turn with progress paragraph A, multiple searches plus
   thinking, progress paragraph B, multiple commands plus thinking, and a final
   answer; Detailed and Compact display modes; legacy message-level transcript
-  search targets.
-- **Steps:** Review the nested disclosure path in Detailed, including independent
-  group/item toggles, parent close/reopen, a singleton segment, literal-final-item
-  leaf selection, failure/denial/recovery, retained-pane remounts and a legacy
-  search reveal. Repeat in Compact and with permission/question/plan/goal action
-  cards, a stopped partial answer, an assistant error and delegated child work.
+  search targets; a marked steering supplement and an unmarked queued Send now
+  prompt.
+- **Steps:** Stream the turn; finish it; expand/collapse its process; review the
+  nested disclosure path in Detailed, including independent group/item toggles,
+  parent close/reopen, a singleton segment, literal-final-item leaf selection,
+  failure/denial/recovery, retained-pane remounts and a legacy search reveal.
+  Repeat in Compact and with permission/question/plan/goal action cards, a
+  stopped partial answer, an assistant error and delegated child work. During an
+  active task, deliver one or multiple marked steering messages, then continue
+  tools and finish. Repeat before the first assistant output, after history
+  reload, with an attachment, and with a separate unmarked queued task.
 - **Expected:** Both modes use one whole-process disclosure and leave the final
   answer, assistant errors, stopped trailing text and pending actions outside it.
-  Detailed starts active/completed processes open; the active multi-item group is
-  open and an untouched group closes on completion. Compact starts processes and
-  groups closed, hides reasoning, and keeps payloads closed; an untouched active
-  process with a recorded failed/denied tool stays open through recovery and closes
-  on completion. Singletons have no group. Detailed auto-opens only an eligible
-  literal final tool/search item of the last activity group; it does not scan past
-  thinking, and failed/denied leaves stay closed. Parent/child/sibling states remain
-  independent, pane-owned user choices survive updates, mode changes and remounts,
-  and renderer restart reapplies defaults. Search reveals the process and activity
-  group that own the named message once per request; item-level targeting is not
-  part of this change, and Compact reasoning requires an
-  explicit switch to Detailed. Saved mode survives restart and a missing/unknown
-  setting resolves to Detailed.
-- **Validation scope for the 2026-09-20 change:** Nested disclosure and activity
-  group presentation only; precise item-level transcript search targeting is out
-  of scope and keeps the existing message-level search behavior.
+  Both modes expand the active process and reset it to collapsed at completion,
+  including after active nested interaction or failed/denied calls. Completed
+  manual reopening survives updates; search reveals the process and activity
+  group that own the named message once per request. The header's failure/issue
+  marker appears only while expanded. Detailed auto-opens only an eligible
+  literal final tool/search item of the last activity group; it does not scan
+  past thinking, and failed/denied leaves stay closed. The active multi-item
+  group is open and an untouched group closes on completion. Compact starts
+  nested groups closed, hides reasoning, and keeps payloads closed. Singletons
+  have no group. Parent/child/sibling nested states remain independent, and
+  pane-owned nested choices survive updates, mode changes and remounts.
+  Renderer restart reapplies defaults. Item-level targeting is not part of this
+  change, and Compact reasoning requires an explicit switch to Detailed. Saved
+  mode survives restart and a missing/unknown setting resolves to Detailed.
+  User messages display a localized time; process elapsed time includes the
+  loaded initiating user's timestamp and falls back safely when the user row or
+  a valid timestamp is unavailable. Marked supplements remain ordered inside one
+  active process and do not fold preceding work on arrival. Task completion
+  folds the supplemental bubbles and both work segments together.
+  Reopening/search reveals their text and files; final response and file summary
+  stay singular. Unmarked new tasks, including queued **Send now** prompts, and
+  missing legacy markers do not merge; unloaded task history is not guessed.
+- **Automation:** `test:e2e:transcript` covers the mounted renderer interactions,
+  settings control and unchanged-group performance. `test:e2e:transcript-disclosure`
+  covers scroll anchoring; `test:e2e:theme-surfaces` covers the shared theme
+  controls. Isolated Host `settings.set/get` checks verify both modes across
+  process restart and preservation during unrelated partial settings writes.
+  Renderer fixtures alone do not prove settings persistence.
+- **Validation scope for the 2026-09-20 nested-disclosure change:** Nested
+  disclosure and activity group presentation only; precise item-level transcript
+  search targeting is out of scope and keeps the existing message-level search
+  behavior.
 - **Specs:** 04-ux/06-settings-ia, 04-ux/08-component-spec,
   04-ux/09-interaction-patterns; ADR turn-process-and-thinking-display.
+
+### E2E-CHAT-task-recorded-files
+
+- **Preconditions:** A loaded assistant turn with successful Write/Edit review
+  snapshots, repeated edits to a path, and a final reply. Exercise 3, 4, 5, 6,
+  and 21 unique paths. Verify the summary at normal and 320px width: a rounded
+  outer border encloses the padded header and separated file list; file names
+  remain vertically centered in their hover rows without horizontal overflow.
+- **Steps:** Complete the task, inspect its count heading and file list, reveal
+  more paths and click one file. Verify the right Review panel opens its expanded
+  diffs, then request guarded rollback there. Repeat
+  with a conflict, rolled-back evidence, failed/scratch tools, a shell-only turn,
+  binary/oversized evidence and another user round. Re-render saved messages and
+  restart the host after a native Bash output and Write/Edit diff each exceed
+  64KiB. Read with `contentLimit: 64 * 1024`, as the desktop does, and compare
+  the real frontend turn-file projection with its pre-restart result. Verify
+  that full uncapped evidence is unchanged and capped rollback states update.
+  switch between sessions. Inspect a bounded transcript window.
+- **Expected:** The final answer and recorded-file summary remain outside the
+  process disclosure. The summary deduplicates snapshots and counts paths;
+  Up to five files are fully visible with no expansion control. Above five,
+  exactly three are initially visible; show-more reports the remaining count,
+  expansion shows all files, and collapse restores the first three.
+  edit totals are cumulative operation totals, not a net Git diff. Rolled-back
+  records remain inspectable and do not contribute to active totals. Existing
+  review controls retain conflict protection and disabled/unavailable states.
+  Other rounds, scratch writes and unsuccessful Write/Edit add no records.
+  Captured Bash changes are included even after a nonzero exit; complete no-op
+  shell activity has no empty file card. The chat has no scope/disclaimer subtitle;
+  zero-record turns show no summary. Historical snapshots stay independent of
+  workspace/Git state. Clicking another file changes the sidebar selection;
+  repeated clicks reopen its details. Selection stays within the originating
+  session and turn, including when another turn edited the same path. The chat
+  itself never expands nested diff cards from the file summary.
+- **Automation:** `apps/desktop/test/turn-file-summary.test.mjs` covers projection;
+  the mounted transcript fixture covers expansion, rollback state, and the
+  failed-Write/scratch-Write/Bash-copy/final-answer user path. `test:e2e:shell-review`
+  runs an isolated native host and real shell to copy three scratch files,
+  verify pre-existing unchanged files are excluded, capture a write followed by
+  nonzero exit, reload persisted multi-file evidence, roll back a single snapshot
+  without changing siblings, and reject a conflict after a later external edit.
+  Rust tests cover bounds, links, ignore rules and same-workspace serialization.
+- **Specs:** 04-ux/08-component-spec; ADR 0043.
+- **Status:** Task-candidate validation; no live provider or user data required.
 
 ### E2E-RPC-unicode-separators
 
