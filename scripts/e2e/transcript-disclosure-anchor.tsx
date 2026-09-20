@@ -118,7 +118,7 @@ function TranscriptFixture({ messages, process = false }: { messages: UiMessage[
           <div ref={contentRef} className="thread-content">
             <div style={{ height: 700 }} />
             {entry?.kind === "assistant-turn"
-              ? <AssistantTurn entry={entry} isActive={false} />
+              ? <AssistantTurn entry={entry} sessionId={undefined} isActive={false} />
               : <ToolRow message={messages[1]} />}
             <div style={{ height: 300 }} />
           </div>

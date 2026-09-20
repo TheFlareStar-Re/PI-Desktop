@@ -9,7 +9,25 @@ import { WorkTabEmpty } from "./WorkTabEmpty";
 export function ReviewTab() {
   const { t } = useTranslation();
   const messages = useAppStore((state) => state.messages);
-  const entries = useMemo(() => reviewChangesFromMessages(messages), [messages]);
+  const activeSessionId = useAppStore((state) => state.activeSessionId);
+  const selection = useAppStore((state) =>
+    state.activeSessionId
+      ? state.workPanelContexts[state.activeSessionId]?.reviewSelection
+      : undefined,
+  );
+  const allEntries = useMemo(
+    () => reviewChangesFromMessages(messages),
+    [messages],
+  );
+  const entries = useMemo(() => {
+    if (!selection || selection.sessionId !== activeSessionId) return allEntries;
+    const snapshotIds = new Set(selection.snapshotIds);
+    return allEntries.filter(
+      ({ change }) =>
+        change.path === selection.selectedPath &&
+        snapshotIds.has(change.snapshotId),
+    );
+  }, [activeSessionId, allEntries, selection]);
   const summary = useMemo(() => summarizeReviewChanges(entries), [entries]);
 
   if (entries.length === 0) {
@@ -37,7 +55,9 @@ export function ReviewTab() {
           <ReviewChangeCard
             key={entry.change.snapshotId}
             message={entry.message}
+            snapshotId={entry.change.snapshotId}
             compact
+            revealToken={selection?.revision}
           />
         ))}
       </div>

@@ -465,7 +465,7 @@ export function useTranscriptScroll({
     readingWindow || firstCommit || paneRevealed ? messages : deferredMessages;
   const renderedCompactions =
     firstCommit || paneRevealed ? compactions : deferredCompactions;
-  const { entries, visible } = useMemo(() => {
+  const entries = useMemo(() => {
     if (previousSessionIdRef.current !== sessionId) {
       previousSessionIdRef.current = sessionId;
       previousEntriesRef.current = [];
@@ -473,7 +473,7 @@ export function useTranscriptScroll({
     const built = buildTranscriptEntries(renderedMessages, renderedCompactions);
     const entries = reuseTranscriptEntries(previousEntriesRef.current, built.entries);
     previousEntriesRef.current = entries;
-    return { entries, visible: built.visible };
+    return entries;
   }, [renderedMessages, renderedCompactions, sessionId]);
   // Memoized so a re-render that changed no message (jump pill, loading row,
   // window growth) hands `TranscriptHistory` the same array, letting its
@@ -631,17 +631,16 @@ export function useTranscriptScroll({
     return () => window.clearTimeout(timer);
   }, [veilPhase]);
 
-  // The minimap must describe the mounted rows, not every loaded message: it
-  // resolves a click by looking up the marker's node in the scroller, so a dash
-  // for a withheld row would jump nowhere (D261).
+  // Both bounded and fully mounted transcripts use the projected entries so
+  // every marker has a visible anchor. Embedded steering stays inside its turn
+  // process and is therefore omitted, while a standalone leading steering is
+  // still a top-level message entry.
   const minimapMessages = useMemo(
     () =>
-      transcriptWindow.bounded
-        ? transcriptEntryMessages(
-            tailEntry ? [...historyEntries, tailEntry] : historyEntries,
-          )
-        : visible,
-    [historyEntries, tailEntry, transcriptWindow.bounded, visible],
+      transcriptEntryMessages(
+        tailEntry ? [...historyEntries, tailEntry] : historyEntries,
+      ),
+    [historyEntries, tailEntry],
   );
   const hasEarlierHistory = transcriptWindow.hiddenAbove > 0 || hasMoreBefore;
 

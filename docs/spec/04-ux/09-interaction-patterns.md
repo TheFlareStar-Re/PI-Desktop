@@ -822,27 +822,33 @@ may be retained while exactly one workspace supplies the visible shell context.
 - Both modes give each loaded assistant turn one whole-process disclosure. It
   contains thinking, tools, hosted searches and intermediate progress text; the
   trailing answer, assistant errors and stopped trailing text remain outside it.
+  A marked `steering: true` supplement stays inside the same process. Unmarked
+  queued **Send now** prompts remain new turns.
 - A contiguous activity segment receives a group disclosure only when it has at
   least two mode-visible items. Progress text ends the segment, a singleton uses
   its item disclosure directly, and compact-hidden thinking does not create a
   redundant group. Existing Task topology remains separate.
-- Detailed starts active and completed whole processes open. Its active ordinary
-  group starts open and closes when it completes only if untouched; completed
-  groups otherwise start closed. Compact starts the process and groups closed,
-  except an untouched active process with any recorded failed/denied tool remains
-  open through recovery and closes on completion.
-- In Detailed, leaf auto-open applies only when the literal final item of the last
-  activity group is an eligible tool-call or hosted-search row. Failed/denied
-  items stay closed, and a final thinking item never causes a backward scan.
-  Compact keeps every item payload closed and hides reasoning text/excerpts while
-  retaining its active thinking indicator.
-- Activating a process, group or item header toggles only that level. Closing a
+- Processes start expanded while active. Completion resets them to collapsed,
+  including after active nested clicks, keyboard interaction or failed/denied
+  calls, by using a new process identity. The header shows a failure/issue
+  marker only while expanded. Reopening a completed process and new search
+  reveals remain effective. The header updates elapsed time once per second
+  while active and shows the tool count. The loaded initiating user's timestamp
+  supplies the start when available; user bubbles also show that timestamp in
+  the current locale.
+- Detailed starts the active ordinary group open and closes it when it completes
+  only if untouched; completed groups otherwise start closed. Compact starts
+  nested groups closed. In Detailed, leaf auto-open applies only when the
+  literal final item of the last activity group is an eligible tool-call or
+  hosted-search row. Failed/denied items stay closed, and a final thinking item
+  never causes a backward scan. Compact keeps every item payload closed and
+  hides reasoning text/excerpts while retaining its active thinking indicator.
+- Activating a nested group or item header toggles only that level. Closing a
   parent preserves child state, reopening restores it, and sibling groups remain
   independent. Opening a parent is never an expand-all action.
-- A manual item action claims its group and process as user-owned without toggling
-  them. Streaming and completion cannot reopen a manual close or close around
-  content the user opened, focused or selected. Choices survive mode changes,
-  singleton-to-group growth and remounts while the retained session pane lives.
+- A manual item action claims its group as user-owned without toggling it.
+  Nested choices survive mode changes, singleton-to-group growth and remounts
+  while the retained session pane lives. Whole-process completion still folds.
 - Search/navigation opens the process and activity group that own the named
   message, once per reveal request. Item-level targeting is not part of this
   change. Compact reasoning requires an explicit switch to Detailed. Closing

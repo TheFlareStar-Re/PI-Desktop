@@ -5,6 +5,7 @@ import { I18nextProvider } from "react-i18next";
 import { en } from "@pi-desktop/i18n";
 import type { AppSettings, UiMessage } from "@pi-desktop/shared";
 import { AssistantTurn } from "../../apps/desktop/src/features/chat/transcript/AssistantTurn";
+import { MessageRow } from "../../apps/desktop/src/features/chat/transcript/MessageRow";
 import { ThinkingDisplayModeRow } from "../../apps/desktop/src/components/settings/ThinkingDisplayModeRow";
 import { buildTranscriptEntries } from "../../apps/desktop/src/lib/assistant-turns";
 import { TranscriptSearchContext } from "../../apps/desktop/src/lib/transcript-search-context";
@@ -69,8 +70,23 @@ export async function turnProcessProbe() {
       root.render(
         <I18nextProvider i18n={i18n}>
           <TranscriptSearchContext.Provider value={search}>
-            <AssistantTurn key={key} entry={entry} isActive={active} />
+            <AssistantTurn
+              key={key}
+              entry={entry}
+              sessionId={undefined}
+              isActive={active}
+            />
           </TranscriptSearchContext.Provider>
+        </I18nextProvider>,
+      ),
+    );
+    assert(!errors.length, `React error: ${errors.map(String).join("; ")}`);
+  };
+  const renderUserMessage = (userMessage: UiMessage) => {
+    flushSync(() =>
+      root.render(
+        <I18nextProvider i18n={i18n}>
+          <MessageRow message={userMessage} isRunning={false} />
         </I18nextProvider>,
       ),
     );
@@ -108,35 +124,154 @@ export async function turnProcessProbe() {
     responseDurationMs: 1000,
   });
   const messages = [intro, read, progress, edit, answer];
+  const deniedWrite = message("denied-write", "tool", "permission denied", {
+    toolName: "Write",
+    toolCallId: "write-call",
+    toolStatus: "denied",
+    toolArgs: { path: "src/example.ts", content: "updated" },
+  });
+  const recoveredBash = message("recovered-bash", "tool", "updated", {
+    toolName: "Bash",
+    toolCallId: "bash-call",
+    toolStatus: "success",
+    toolArgs: { command: "Set-Content src/example.ts updated" },
+  });
+  const recoveredAnswer = message(
+    "recovered-answer",
+    "assistant",
+    "The fallback completed the update.",
+    { status: "complete", createdAt: "2026-09-17T00:00:04.000Z" },
+  );
+  const activeRecovery = [intro, deniedWrite, recoveredBash];
+  const completedRecovery = [...activeRecovery, recoveredAnswer];
+  const steeringRoot = message("steering-root", "user", "Inspect the renderer", {
+    createdAt: "2026-09-17T00:00:00.000Z",
+  });
+  const steering = message("steering-supplement", "user", "Also preserve the attachment", {
+    steering: true,
+    createdAt: "2026-09-17T00:00:02.500Z",
+    attachments: [{ kind: "file", name: "notes.txt", ref: "notes.txt" }],
+  });
+  const activeSteered = [steeringRoot, intro, read, steering, edit];
+  const completedSteered = [...activeSteered, answer];
+  const preOutputSteered = [steeringRoot, steering, read, answer];
+  const verifyCompletionLifecycle = (
+    mode: "detailed" | "compact",
+    requestId: number,
+  ) => {
+    flushSync(() =>
+      useAppStore.setState({
+        settings: { ...settings, thinkingDisplayMode: mode },
+      }),
+    );
+    const key = `${mode}-completion`;
+    render(activeRecovery, true, null, key);
+    check(
+      header()?.getAttribute("aria-expanded") === "true" && visible(process()),
+      `${mode} active recovery process opens automatically`,
+    );
+    const nestedHeader = container.querySelector<HTMLButtonElement>(
+      '[data-message-id="denied-write"] .tool-row-header',
+    );
+    click(nestedHeader);
+    check(
+      nestedHeader?.getAttribute("aria-expanded") === "true",
+      `${mode} active nested interaction expands tool details`,
+    );
+    render(completedRecovery, false, null, key);
+    check(
+      header()?.getAttribute("aria-expanded") === "false" && !visible(process()),
+      `${mode} completion folds the entire interacted process`,
+    );
+    check(
+      !header()?.querySelector(".turn-process-error"),
+      `${mode} completed folded header omits the failure marker`,
+    );
+    check(
+      visible(container.querySelector('[data-message-id="recovered-answer"]')),
+      `${mode} recovered final answer remains outside the process`,
+    );
+    click(header());
+    check(
+      Boolean(header()?.querySelector(".turn-process-error")) &&
+        visible(container.querySelector('[data-message-id="denied-write"]')),
+      `${mode} reopening preserves the failure marker and tool details`,
+    );
+    render(
+      [
+        ...activeRecovery,
+        { ...recoveredAnswer, responseDurationMs: 1000 },
+      ],
+      false,
+      null,
+      key,
+    );
+    check(
+      header()?.getAttribute("aria-expanded") === "true" && visible(process()),
+      `${mode} completed manual reopen survives unrelated updates`,
+    );
+    click(header());
+    render(
+      completedRecovery,
+      false,
+      {
+        sessionId: "s",
+        messageId: "denied-write",
+        query: "permission",
+        requestId,
+      },
+      key,
+    );
+    check(
+      header()?.getAttribute("aria-expanded") === "true" &&
+        visible(container.querySelector('[data-message-id="denied-write"]')),
+      `${mode} search reveals a completed folded process`,
+    );
+  };
   try {
     render(messages);
     check(
       container.querySelectorAll(".turn-process").length === 1,
-      "detailed wraps one process per turn",
+      "detailed groups one process per turn",
     );
     check(
-      header()?.getAttribute("aria-expanded") === "true" && visible(process()),
-      "detailed starts the process open",
+      header()?.getAttribute("aria-expanded") === "false" && !visible(process()),
+      "detailed completed process starts collapsed",
     );
     check(
       visible(container.querySelector('[data-message-id="answer"]')),
-      "final answer stays visible",
+      "final answer stays visible outside the process",
     );
     check(
+      !visible(container.querySelector('[data-message-id="progress"]')),
+      "completed progress starts folded",
+    );
+    check(
+      header()?.textContent?.includes("2 tools"),
+      "detailed process counts reasoning, tools, and progress once",
+    );
+    check(
+      header()?.textContent?.includes(
+        i18n.t("chat.processedFor", { time: "4s" }),
+      ),
+      "completed process header shows elapsed time",
+    );
+    click(header());
+    check(
       visible(container.querySelector('[data-message-id="progress"]')),
-      "detailed keeps intermediate progress visible",
+      "detailed keeps completed progress recoverable",
     );
     check(
       container.querySelector('[data-message-id="edit"]')?.classList.contains("open") === true,
-      "detailed opens the last tool",
+      "detailed opens the last tool inside the process",
     );
     check(
       container.querySelector('[data-message-id="read"]')?.classList.contains("open") !== true,
       "detailed keeps earlier tools collapsed",
     );
     check(
-      container.querySelectorAll(".tool-row").length === 3,
-      "detailed shows thinking and both tools in place",
+      process()?.querySelectorAll(".tool-row").length === 3,
+      "detailed keeps completed thinking and tools recoverable",
     );
     render(
       [intro, { ...read, toolStatus: "error", isError: true }, answer],
@@ -149,6 +284,73 @@ export async function turnProcessProbe() {
       "detailed keeps a last failed tool collapsed",
     );
 
+
+    render(activeSteered, true, null, "steering-lifecycle");
+    check(
+      container.querySelectorAll(".turn-process").length === 1 &&
+        header()?.getAttribute("aria-expanded") === "true",
+      "marked steering keeps earlier and later work in one active process",
+    );
+    const readRow = container.querySelector('[data-message-id="read"]');
+    const steeringRow = container.querySelector('[data-message-id="steering-supplement"]');
+    const editRow = container.querySelector('[data-message-id="edit"]');
+    check(
+      Boolean(
+        readRow &&
+          steeringRow &&
+          editRow &&
+          (readRow.compareDocumentPosition(steeringRow) &
+            Node.DOCUMENT_POSITION_FOLLOWING) &&
+          (steeringRow.compareDocumentPosition(editRow) &
+            Node.DOCUMENT_POSITION_FOLLOWING),
+      ),
+      "expanded process preserves work, steering bubble, continuation order",
+    );
+    check(
+      steeringRow?.querySelector(".chat-file-chip")?.textContent?.includes("notes.txt") === true,
+      "embedded steering keeps user attachments",
+    );
+    render(completedSteered, false, null, "steering-lifecycle");
+    check(
+      header()?.getAttribute("aria-expanded") === "false" &&
+        !visible(container.querySelector('[data-message-id="steering-supplement"]')) &&
+        visible(container.querySelector('[data-message-id="answer"]')),
+      "completed steering process folds while the final answer stays outside",
+    );
+    render(
+      completedSteered,
+      false,
+      {
+        sessionId: "s",
+        messageId: "steering-supplement",
+        query: "attachment",
+        requestId: 103,
+      },
+      "steering-lifecycle",
+    );
+    check(
+      header()?.getAttribute("aria-expanded") === "true" &&
+        visible(container.querySelector('[data-message-id="steering-supplement"]')),
+      "search reveals a steering bubble inside the folded process",
+    );
+    render(preOutputSteered, false, null, "steering-before-output");
+    const steeringAnchor = container.querySelector(
+      '[data-minimap-id="steering-supplement"]',
+    );
+    const assistantAnchor = container.querySelector('[data-minimap-id="answer"]');
+    check(
+      steeringAnchor === null &&
+        container.querySelectorAll('[data-minimap-id="answer"]').length === 1 &&
+        visible(assistantAnchor) &&
+        !visible(container.querySelector('[data-message-id="steering-supplement"]')),
+      "grouped steering has no hidden minimap anchor while the assistant anchor stays visible",
+    );
+    renderUserMessage(steering);
+    check(
+      container.querySelectorAll('[data-minimap-id="steering-supplement"]').length === 1 &&
+        visible(container.querySelector('[data-minimap-id="steering-supplement"]')),
+      "standalone leading steering keeps a visible minimap anchor",
+    );
     const streaming = message("stream", "assistant", "Live text", {
       status: "streaming",
     });
@@ -161,7 +363,7 @@ export async function turnProcessProbe() {
     check(
       header()?.getAttribute("aria-expanded") === "true" &&
         visible(container.querySelector('[data-message-id="stream"]')),
-      "detailed keeps streamed text visible after later tools",
+      "later tools move provisional text into the expanded process",
     );
     render([intro, read, { ...answer, status: "aborted" }], false, null, "aborted");
     check(
@@ -185,11 +387,8 @@ export async function turnProcessProbe() {
       "failure remains visible",
     );
 
-    flushSync(() =>
-      useAppStore.setState({
-        settings: { ...settings, thinkingDisplayMode: "compact" },
-      }),
-    );
+    verifyCompletionLifecycle("detailed", 101);
+    verifyCompletionLifecycle("compact", 102);
     render(messages, false, null, "compact-group");
     check(
       container.querySelectorAll(".turn-process").length === 1,
@@ -219,14 +418,19 @@ export async function turnProcessProbe() {
     render(messages, true, null, "compact-group");
     render(messages, false, null, "compact-group");
     check(
-      header()?.getAttribute("aria-expanded") === "true",
-      "manual disclosure survives active-to-complete transition",
+      header()?.getAttribute("aria-expanded") === "false" && !visible(process()),
+      "active-to-complete transition resets a previously opened process",
     );
 
     render([intro, read], true, null, "live");
     check(
-      header()?.getAttribute("aria-expanded") === "false",
-      "compact live process stays collapsed without a tool failure",
+      header()?.getAttribute("aria-expanded") === "true" && visible(process()),
+      "compact live process opens automatically",
+    );
+    render(messages, false, null, "live");
+    check(
+      header()?.getAttribute("aria-expanded") === "false" && !visible(process()),
+      "compact live process collapses after completion",
     );
     render(
       messages,
@@ -285,13 +489,15 @@ export async function turnProcessProbe() {
 
     render(
       [intro, { ...read, toolStatus: "error", isError: true }, answer],
-      true,
+      false,
       null,
       "tool-error",
     );
     check(
-      header()?.getAttribute("aria-expanded") === "true" && visible(process()),
-      "an active tool failure opens an unclaimed process",
+      header()?.getAttribute("aria-expanded") === "false" &&
+        !visible(process()) &&
+        !header()?.querySelector(".turn-process-error"),
+      "completed tool failures stay folded without a header marker",
     );
 
     let saved: Partial<AppSettings> | undefined;
@@ -339,7 +545,7 @@ export async function turnProcessProbe() {
       Boolean(header()) && !container.textContent?.includes("hidden thinking words"),
       "compact live thinking has status without reasoning text",
     );
-    click(header());
+    check(header()?.getAttribute("aria-expanded") === "true", "compact live process starts expanded");
     check(
       visible(container.querySelector(".thinking-compact")),
       "compact live thinking remains indicator-only when expanded",
@@ -376,8 +582,44 @@ export async function turnProcessProbe() {
       "mode changes update mounted history",
     );
     check(
+      header()?.getAttribute("aria-expanded") === "true" && visible(process()),
+      "mode changes preserve a completed manual reopen",
+    );
+    check(
       messages[0].thinking === "reasoning detail",
       "presentation never deletes reasoning data",
+    );
+
+    const userTimestamp = "2026-09-17T13:45:00.000Z";
+    renderUserMessage(
+      message("timestamp-user", "user", "Timestamped request", {
+        createdAt: userTimestamp,
+      }),
+    );
+    const time = container.querySelector<HTMLTimeElement>(".message-timestamp");
+    const bubble = container.querySelector(".message-bubble");
+    const expectedTimestamp = new Intl.DateTimeFormat(
+      i18n.resolvedLanguage ?? i18n.language,
+      { dateStyle: "medium", timeStyle: "short" },
+    ).format(new Date(userTimestamp));
+    check(
+      time?.dateTime === userTimestamp &&
+        time.textContent === expectedTimestamp &&
+        Boolean(
+          bubble &&
+            (time.compareDocumentPosition(bubble) &
+              Node.DOCUMENT_POSITION_FOLLOWING),
+        ),
+      "user timestamp is semantic, localized, and placed above the bubble",
+    );
+    renderUserMessage(
+      message("invalid-timestamp", "user", "Invalid timestamp", {
+        createdAt: "not-a-date",
+      }),
+    );
+    check(
+      !container.querySelector(".message-timestamp"),
+      "invalid user timestamp is omitted",
     );
     return { ok: true, checks: notes };
   } finally {

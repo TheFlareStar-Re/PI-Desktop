@@ -246,16 +246,16 @@ test("the window is owned per session pane, so no switch can inherit a budget", 
 });
 
 test("the minimap keeps message dashes reachable and represents withheld history explicitly", () => {
-  // Message dashes still resolve to mounted DOM nodes. Older loaded/unloaded
-  // history is one honest continuation control, never a phantom message dash.
+  // Message dashes still resolve to mounted DOM nodes. Both bounded and fully
+  // mounted transcripts use entry projection, so grouped steering cannot create
+  // a marker whose only anchor is hidden inside a collapsed process.
   assert.match(minimap, /querySelectorAll<HTMLElement>\("\[data-minimap-id\]"\)/);
   assert.match(transcript, /messages=\{minimapMessages\}/);
   assert.match(transcript, /hasEarlier=\{hasEarlierHistory\}/);
   assert.match(transcript, /onRevealEarlier=\{revealEarlierHistory\}/);
-  assert.match(
-    transcript,
-    /transcriptWindow\.bounded\s*\?\s*transcriptEntryMessages\(/,
-  );
+  assert.match(transcript, /const minimapMessages = useMemo\([\s\S]*?transcriptEntryMessages\(/);
+  assert.doesNotMatch(transcript, /transcriptWindow\.bounded\s*\?\s*transcriptEntryMessages\(/);
+  assert.doesNotMatch(transcript, /:\s*visible,/);
   assert.match(
     transcript,
     /const hasEarlierHistory = transcriptWindow\.hiddenAbove > 0 \|\| hasMoreBefore/,

@@ -128,18 +128,30 @@ pub fn user_global_ignore_file() -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
-/// Apply the ignore layers to an in-process walk. `scoped` walks (explicit
-/// `path` argument) keep only the security denylist.
-pub fn configure_walker(walker: &mut WalkBuilder, ignore_root: &Path, scoped: bool) {
+fn configure_walker_inner(
+    walker: &mut WalkBuilder,
+    ignore_root: &Path,
+    scoped: bool,
+    excluded_roots: Vec<PathBuf>,
+    include_user_global: bool,
+) {
     if !scoped {
         if let Some(file) = workspace_ignore_file(ignore_root) {
             let _ = walker.add_ignore(file);
         }
-        if let Some(file) = user_global_ignore_file() {
-            let _ = walker.add_ignore(file);
+        if include_user_global {
+            if let Some(file) = user_global_ignore_file() {
+                let _ = walker.add_ignore(file);
+            }
         }
     }
     walker.filter_entry(move |entry| {
+        if excluded_roots
+            .iter()
+            .any(|root| entry.path() == root || entry.path().starts_with(root))
+        {
+            return false;
+        }
         let Some(name) = entry.file_name().to_str() else {
             return true;
         };
@@ -164,6 +176,21 @@ pub fn configure_walker(walker: &mut WalkBuilder, ignore_root: &Path, scoped: bo
         }
         !is_default_ignored_file_name(name)
     });
+}
+
+/// Apply the ignore layers to an in-process walk. `scoped` walks (explicit
+/// `path` argument) keep only the security denylist.
+pub fn configure_walker(walker: &mut WalkBuilder, ignore_root: &Path, scoped: bool) {
+    configure_walker_inner(walker, ignore_root, scoped, Vec::new(), true);
+}
+
+pub(crate) fn configure_shell_review_walker(
+    walker: &mut WalkBuilder,
+    ignore_root: &Path,
+    excluded_roots: Vec<PathBuf>,
+) {
+    walker.git_global(false);
+    configure_walker_inner(walker, ignore_root, false, excluded_roots, false);
 }
 
 /// Extra `rg` arguments implementing the same layers. `.env.*` is left to the

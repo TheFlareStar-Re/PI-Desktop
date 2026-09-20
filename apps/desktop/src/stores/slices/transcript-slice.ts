@@ -399,7 +399,7 @@ export function createTranscriptSlice({
               ? {
                   messages: current.messages.map((message) =>
                     message.id === messageId
-                      ? withReviewChangeState(message, "rolledBack")
+                      ? withReviewChangeState(message, "rolledBack", result.snapshotId)
                       : message,
                   ),
                 }
