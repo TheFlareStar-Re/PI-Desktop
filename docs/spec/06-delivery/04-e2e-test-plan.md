@@ -5568,10 +5568,19 @@ identify the platform validation still needed.
   5. Repeat with an `ops` payload whose ranges overlap.
   6. If the task uses a dedicated worktree outside the advertised workspace,
      verify its guarded Bash edit and resulting `git diff`.
+  7. Hold a workspace mutation guard, queue another mutation, then release the
+     workspace while class capacity remains occupied. Repeat with 64 mixed
+     workspace/permit waiters, attempt another waiting call, and drop waiters
+     during workspace and permit acquisition.
 - **Expected**:
   - Read/search calls may overlap, but only one `Write`/`Edit` executes for a
     session at a time; queued mutations do not consume another global
     mutation slot while waiting.
+  - Workspace and permit waits share one 30-second admission deadline and one
+    64-call queue. Excess waiting calls return `HOST_OVERLOADED`; immediately
+    available calls still run. Workspace waiters do not reserve global tool
+    capacity. Dropped or timed-out admission futures release queue slots,
+    partial permits, and workspace guards; subsequent calls can run normally.
   - The stale-tag edit fails without changing the file and returns
     `EDIT_TAG_MISMATCH` carrying the live tag and current content at the
     anchors; the overlapping-range payload fails with `EDIT_RANGE_INVALID`

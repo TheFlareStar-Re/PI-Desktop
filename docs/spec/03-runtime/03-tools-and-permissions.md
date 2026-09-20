@@ -301,6 +301,14 @@ to prevent another host mutation contaminating a shell capture. Acquisition is
 cancellable; different workspace roots remain independent. External programs
 are outside this lock, so rollback still requires the post-content hash.
 
+Tool admission has one 30-second deadline shared by workspace, total, class,
+and session waits. Workspace waiters count toward the same 64-call bounded
+queue as permit waiters; a full queue rejects additional waiting calls with
+`HOST_OVERLOADED`, while immediately available calls still run. Waiting for a
+workspace never reserves total or class permits. Timeout or dropping an
+admission future releases its queue slot, partial permits, and workspace guard.
+Standalone workspace acquisition for rollback retains its 30-second bound.
+
 `Edit` names positions and supplies new content only; it never matches existing
 text. Every call carries the whole-file `tag` minted by whichever tool last
 displayed the content, and the host rejects a call whose tag does not hash the

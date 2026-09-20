@@ -14,7 +14,7 @@ pub const MAX_IN_FLIGHT_MUTATIONS_PER_SESSION: usize = 1;
 pub const MAX_IN_FLIGHT_PLUGINS: usize = 4;
 pub const MAX_IN_FLIGHT_PER_SESSION: usize = 4;
 pub const MAX_QUEUED_TOOLS: usize = 64;
-/// How long a call waits for its class permit before admission fails. A call
+/// How long a call waits for workspace, class and session admission. A call
 /// waits here after the permission gate and before it runs, so the transport
 /// deadline has to carry it too. Mirrored by `TOOL_QUEUE_WAIT_MS` in
 /// `packages/shared/src/rpc-timeouts.ts`.
@@ -69,6 +69,29 @@ pub struct ToolPermit {
     _session: OwnedSemaphorePermit,
     _session_mutation: Option<OwnedSemaphorePermit>,
     _workspace_mutation: Option<OwnedMutexGuard<()>>,
+}
+
+struct QueuedTool {
+    queued: Arc<AtomicUsize>,
+}
+
+impl QueuedTool {
+    fn enter(queued: Arc<AtomicUsize>) -> Result<Self, AdmissionError> {
+        queued
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |depth| {
+                (depth < MAX_QUEUED_TOOLS).then_some(depth + 1)
+            })
+            .map_err(|depth| AdmissionError::QueueFull {
+                queue_depth: depth + 1,
+            })?;
+        Ok(Self { queued })
+    }
+}
+
+impl Drop for QueuedTool {
+    fn drop(&mut self) {
+        self.queued.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -143,10 +166,11 @@ impl ToolBudget {
         workspace_root: Option<&Path>,
         workspace_locks: &WorkspaceMutationLocks,
     ) -> Result<ToolPermit, AdmissionError> {
+        let deadline = tokio::time::Instant::now() + QUEUE_WAIT;
         let class = ToolClass::from_name(tool_name);
-        let workspace_mutation = if matches!(class, ToolClass::Mutation | ToolClass::Shell) {
+        let workspace_lock = if matches!(class, ToolClass::Mutation | ToolClass::Shell) {
             match workspace_root {
-                Some(root) => Some(workspace_locks.acquire(root).await?),
+                Some(root) => Some(workspace_locks.lock_for(root).await),
                 None => None,
             }
         } else {
@@ -159,41 +183,42 @@ impl ToolBudget {
             _ => None,
         };
 
-        if let Some(mut permit) = Self::try_acquire(
-            self.total.clone(),
-            class_semaphore.clone(),
-            session_semaphore.clone(),
-            session_mutation_semaphore.clone(),
-        ) {
-            permit._workspace_mutation = workspace_mutation;
-            return Ok(permit);
+        // Try every resource without waiting, releasing partial guards on failure.
+        // In particular, never reserve class/total capacity behind a workspace lock.
+        let workspace_mutation = match &workspace_lock {
+            Some(lock) => lock.clone().try_lock_owned().map(Some),
+            None => Ok(None),
+        };
+        if let Ok(workspace_mutation) = workspace_mutation {
+            if let Some(mut permit) = Self::try_acquire(
+                self.total.clone(),
+                class_semaphore.clone(),
+                session_semaphore.clone(),
+                session_mutation_semaphore.clone(),
+            ) {
+                permit._workspace_mutation = workspace_mutation;
+                return Ok(permit);
+            }
         }
 
-        let queue_depth = self.queued.fetch_add(1, Ordering::SeqCst) + 1;
-        if queue_depth > MAX_QUEUED_TOOLS {
-            self.queued.fetch_sub(1, Ordering::SeqCst);
-            return Err(AdmissionError::QueueFull { queue_depth });
-        }
-
-        let result = tokio::time::timeout(
-            QUEUE_WAIT,
-            Self::acquire_all(
+        let _queued = QueuedTool::enter(self.queued.clone())?;
+        tokio::time::timeout_at(deadline, async {
+            let workspace_mutation = match workspace_lock {
+                Some(lock) => Some(lock.lock_owned().await),
+                None => None,
+            };
+            let mut permit = Self::acquire_all(
                 self.total.clone(),
                 class_semaphore,
                 session_semaphore,
                 session_mutation_semaphore,
-            ),
-        )
-        .await;
-        self.queued.fetch_sub(1, Ordering::SeqCst);
-
-        match result {
-            Ok(mut permit) => {
-                permit._workspace_mutation = workspace_mutation;
-                Ok(permit)
-            }
-            Err(_) => Err(AdmissionError::QueueWaitTimeout),
-        }
+            )
+            .await;
+            permit._workspace_mutation = workspace_mutation;
+            permit
+        })
+        .await
+        .map_err(|_| AdmissionError::QueueWaitTimeout)
     }
 
     pub fn snapshot(&self) -> ToolBudgetSnapshot {
@@ -301,9 +326,210 @@ impl Default for ToolBudget {
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolBudget, WorkspaceMutationLocks};
+    use super::{AdmissionError, ToolBudget, WorkspaceMutationLocks, MAX_QUEUED_TOOLS, QUEUE_WAIT};
+    use std::future::{poll_fn, Future};
     use std::path::Path;
+    use std::pin::Pin;
+    use std::task::Poll;
     use std::time::Duration;
+
+    async fn assert_pending<F: Future>(mut future: Pin<&mut F>) {
+        poll_fn(|cx| {
+            assert!(future.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn workspace_and_class_waits_share_one_deadline() {
+        let budget = ToolBudget::new();
+        let locks = WorkspaceMutationLocks::default();
+        let root = Path::new("shared");
+        let workspace = locks.acquire(root).await.unwrap();
+        let mut holders = Vec::new();
+        for index in 0..super::MAX_IN_FLIGHT_MUTATIONS {
+            holders.push(
+                budget
+                    .acquire(&format!("holder-{index}"), "Edit", None, &locks)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let mut waiter = Box::pin(budget.acquire("waiter", "Write", Some(root), &locks));
+        assert_pending(waiter.as_mut()).await;
+        tokio::time::advance(Duration::from_secs(20)).await;
+        drop(workspace);
+        assert_pending(waiter.as_mut()).await;
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let result = poll_fn(|cx| match waiter.as_mut().poll(cx) {
+            Poll::Ready(result) => Poll::Ready(result),
+            Poll::Pending => {
+                panic!("workspace and class waits exceeded the single admission deadline")
+            }
+        })
+        .await;
+        assert!(matches!(result, Err(AdmissionError::QueueWaitTimeout)));
+        assert_eq!(budget.snapshot().queued, 0);
+        assert_eq!(budget.snapshot().active, holders.len());
+        assert!(locks.lock_for(root).await.try_lock_owned().is_ok());
+        drop(holders);
+        assert!(budget
+            .acquire("waiter", "Write", Some(root), &locks)
+            .await
+            .is_ok());
+        assert_eq!(budget.snapshot().active, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn workspace_and_class_waiters_share_queue_capacity() {
+        let budget = ToolBudget::new();
+        let locks = WorkspaceMutationLocks::default();
+        let root = Path::new("shared");
+        let workspace = locks.acquire(root).await.unwrap();
+        let mut holders = Vec::new();
+        for index in 0..super::MAX_IN_FLIGHT_SHELL {
+            holders.push(
+                budget
+                    .acquire(&format!("holder-{index}"), "Bash", None, &locks)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let mut waiters = Vec::new();
+        for index in 0..MAX_QUEUED_TOOLS {
+            let workspace_root = if index == 0 { None } else { Some(root) };
+            let mut waiter = Box::pin(budget.acquire("waiter", "Bash", workspace_root, &locks));
+            assert_pending(waiter.as_mut()).await;
+            // Refill Tokio's cooperative budget before polling the next admission.
+            tokio::task::yield_now().await;
+            waiters.push(waiter);
+        }
+        assert_eq!(budget.snapshot().queued, MAX_QUEUED_TOOLS);
+        // Only the class waiter can reserve a total permit; workspace waiters cannot.
+        assert_eq!(budget.snapshot().active, holders.len() + 1);
+        let mut overflow = Box::pin(budget.acquire("overflow", "Edit", Some(root), &locks));
+        let result = poll_fn(|cx| match overflow.as_mut().poll(cx) {
+            Poll::Ready(result) => Poll::Ready(result),
+            Poll::Pending => panic!("a full queue must reject workspace waiters immediately"),
+        })
+        .await;
+        assert!(matches!(result, Err(AdmissionError::QueueFull { .. })));
+        assert_eq!(budget.snapshot().queued, MAX_QUEUED_TOOLS);
+        // Free capacity still takes the immediate path even when the queue is full.
+        assert!(budget.acquire("reader", "Read", None, &locks).await.is_ok());
+        // Queue rejection also releases a workspace acquired by the fast path.
+        let other = Path::new("other");
+        assert!(matches!(
+            budget
+                .acquire("overflow", "Bash", Some(other), &locks)
+                .await,
+            Err(AdmissionError::QueueFull { .. })
+        ));
+        assert!(locks.lock_for(other).await.try_lock_owned().is_ok());
+        drop(waiters);
+        assert_eq!(budget.snapshot().queued, 0);
+        assert_eq!(budget.snapshot().active, holders.len());
+        drop(workspace);
+        drop(holders);
+        assert!(budget
+            .acquire("waiter", "Bash", Some(root), &locks)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_workspace_waiter_releases_queue_slot() {
+        let budget = ToolBudget::new();
+        let locks = WorkspaceMutationLocks::default();
+        let root = Path::new("shared");
+        let holder = budget
+            .acquire("holder", "Bash", Some(root), &locks)
+            .await
+            .unwrap();
+        let mut waiter = Box::pin(budget.acquire("waiter", "Edit", Some(root), &locks));
+        assert_pending(waiter.as_mut()).await;
+        assert_eq!(budget.snapshot().queued, 1);
+        assert_eq!(budget.snapshot().active, 1);
+        assert_eq!(budget.snapshot().mutations, 0);
+        drop(waiter);
+        assert_eq!(budget.snapshot().queued, 0);
+        drop(holder);
+        let permit = budget
+            .acquire("waiter", "Edit", Some(root), &locks)
+            .await
+            .unwrap();
+        assert!(locks.lock_for(root).await.try_lock_owned().is_err());
+        drop(permit);
+        assert!(locks.lock_for(root).await.try_lock_owned().is_ok());
+        assert_eq!(budget.snapshot().active, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_class_or_session_waiter_releases_queue_lock_and_permits() {
+        for block_class in [true, false] {
+            let budget = ToolBudget::new();
+            let locks = WorkspaceMutationLocks::default();
+            let root = Path::new("shared");
+            let mut holders = Vec::new();
+            let count = if block_class {
+                super::MAX_IN_FLIGHT_MUTATIONS
+            } else {
+                super::MAX_IN_FLIGHT_PER_SESSION
+            };
+            for index in 0..count {
+                let session = if block_class {
+                    format!("holder-{index}")
+                } else {
+                    "waiter".to_string()
+                };
+                let tool = if block_class { "Edit" } else { "Read" };
+                holders.push(budget.acquire(&session, tool, None, &locks).await.unwrap());
+            }
+            let mut waiter = Box::pin(budget.acquire("waiter", "Write", Some(root), &locks));
+            assert_pending(waiter.as_mut()).await;
+            assert_eq!(budget.snapshot().queued, 1);
+            assert_eq!(budget.snapshot().active, holders.len() + 1);
+            assert!(locks.lock_for(root).await.try_lock_owned().is_err());
+            drop(waiter);
+            assert_eq!(budget.snapshot().queued, 0);
+            assert_eq!(budget.snapshot().active, holders.len());
+            assert_eq!(
+                budget.snapshot().mutations,
+                if block_class { count } else { 0 }
+            );
+            assert!(locks.lock_for(root).await.try_lock_owned().is_ok());
+            assert_eq!(
+                budget
+                    .session_mutation_semaphore("waiter")
+                    .await
+                    .available_permits(),
+                1
+            );
+            drop(holders);
+            assert!(budget
+                .acquire("waiter", "Write", Some(root), &locks)
+                .await
+                .is_ok());
+            assert_eq!(budget.snapshot().active, 0);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn standalone_workspace_wait_remains_bounded() {
+        let locks = WorkspaceMutationLocks::default();
+        let root = Path::new("shared");
+        let holder = locks.acquire(root).await.unwrap();
+        let mut waiter = Box::pin(locks.acquire(root));
+        assert_pending(waiter.as_mut()).await;
+        tokio::time::advance(QUEUE_WAIT).await;
+        assert!(matches!(
+            waiter.await,
+            Err(AdmissionError::QueueWaitTimeout)
+        ));
+        drop(holder);
+        assert!(locks.acquire(root).await.is_ok());
+    }
 
     #[tokio::test]
     async fn limits_shell_concurrency_and_reports_active_work() {
