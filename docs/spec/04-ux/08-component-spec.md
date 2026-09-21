@@ -842,12 +842,15 @@ the existing Task topology remains the container for delegated work.
 
 The whole process starts expanded while active. Completion resets it to collapsed,
 including after active interaction or failed/denied tool calls, by using a new
-process identity. The header shows a failure/issue marker whenever the process
-has issues, including while folded, matching compact nested activity groups;
-completed manual reopening and new search reveals remain effective. The header
-shows elapsed time and a tool count. Elapsed time starts at the initiating user
-message when loaded, otherwise at the first valid assistant/tool timestamp, and
-ends at the latest recorded message/tool completion.
+process identity. The header shows an icon-only failure/issue marker whenever
+the process has issues, including while folded, with the issue count in the
+accessible name rather than visible text; completed manual reopening and new
+search reveals remain effective. The header shows elapsed time and a tool count.
+The header stays content-sized in both states; expanded details use the available
+conversation width.
+Elapsed time starts at the initiating user message when loaded, otherwise at
+the first valid assistant/tool timestamp, and ends at the latest recorded
+message/tool completion.
 
 The ordinary group owning the active execution segment starts open in Detailed,
 then closes on completion only if untouched; other completed groups start closed.
@@ -883,7 +886,8 @@ formatted in the current UI locale and local timezone from the persisted
 `createdAt`. Completed assistant turns show the same hover timestamp from the
 recorded process end. Invalid timestamps are omitted. Optimistic messages use
 their send timestamp until acknowledged. The timestamp stays in the existing
-hover/focus-within action row and is not shown at rest.
+hover action row and is not shown at rest, including when Chromium keeps
+`:hover` after the pointer leaves the window.
 
 An inactive assistant turn shows a file summary below the response when its
 loaded top-level tool messages contain workspace Write/Edit or captured Bash
@@ -2225,7 +2229,7 @@ twice.
   completion transitions never reverse those states.
 - A failed child row remains error-hued and reports its failure in the row header,
   but its payload is not auto-expanded. The containing group settles as
-  `Processed for {elapsed}` with an issue count even when a later tool recovered.
+  `Processed for {elapsed}` with an icon-only issue marker even when a later tool recovered.
   Expansion uses a short height/opacity transition and keeps collapsed content inert.
 - Running updates replace the latest partial output in place. Bash's cumulative
   `details.output` partial result is rendered through the stdout channel, while

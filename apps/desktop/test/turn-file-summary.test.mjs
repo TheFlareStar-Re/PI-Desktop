@@ -257,3 +257,27 @@ test("nested delegate edits remain excluded from parent rollback groups", () => 
   assert.equal(summary.hasBashTool, false);
   assert.equal(summary.hasExcludedSubagentEdits, true);
 });
+
+test("malformed and legacy records keep the same counts without exposing hunks", () => {
+  const hunks = Array.from({ length: 8 }, (_, index) => ({
+    header: `@@ -${index} +${index} @@`,
+    lines: [{ type: "add", text: `line-${index}` }],
+  }));
+  const [entry] = turnEntries([
+    shell("mixed", [
+      { version: 2, snapshotId: "legacy", path: "legacy.ts" },
+      { ...review("invalid", "bad.ts"), additions: -1 },
+      review("ok", "src/ok.ts", { hunks, additions: 4, deletions: 0 }),
+      review("ok", "src/ok.ts", { hunks, additions: 7, deletions: 2 }),
+    ]),
+    message("answer", "assistant", { content: "Done" }),
+  ]);
+  const summary = summarizeTurnFileChanges(entry);
+
+  assert.equal(summary.fileCount, 1);
+  assert.equal(summary.operationCount, 1);
+  assert.equal(summary.files[0].path, "src/ok.ts");
+  assert.equal(summary.files[0].entries[0].change.snapshotId, "ok");
+  assert.deepEqual([summary.additions, summary.deletions], [7, 2]);
+  assert.equal("hunks" in summary.files[0].entries[0].change, false);
+});

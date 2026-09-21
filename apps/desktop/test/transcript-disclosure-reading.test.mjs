@@ -28,6 +28,7 @@ test("automatic disclosure does not claim a reading position", () => {
   // Automatic reveal/collapse may claim the parent hierarchy, but never calls
   // the scroll anchor notifier reserved for direct user interaction.
   assert.match(disclosure, /if \(previousOpen\.current && !open && !choice && ownsReadingPosition/);
+  assert.match(disclosure, /const identityChanged = previousKey\.current !== key;/);
   const revealEffect = disclosure.match(
     /useLayoutEffect\(\(\) => \{\s*if \(revealRequest === undefined[\s\S]*?\n  \}, \[choices, key, parent\.claim, revealRequest\]\);/,
   )?.[0];

@@ -1012,9 +1012,13 @@
 }
 
 .message-row:hover .message-actions,
-.message-row:focus-within .message-actions,
 .message-actions:focus-within {
   opacity: 1;
+}
+
+html.pointer-outside .message-row:hover .message-actions:not(:focus-within),
+html.pointer-outside .message-actions:not(:focus-within) {
+  opacity: 0;
 }
 
 .icon-btn:active:not(:disabled),
@@ -3022,6 +3026,12 @@
   width: 100%;
   margin: 0 0 8px;
   min-width: 0;
+}
+
+/* Turn headers stay content-sized in both states; details retain the band. */
+.turn-process > .tool-activity-header {
+  width: fit-content;
+  max-width: 100%;
 }
 
 .turn-process.open > .tool-activity-header > .tool-activity-caret,

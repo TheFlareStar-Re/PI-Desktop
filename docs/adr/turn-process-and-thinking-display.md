@@ -51,8 +51,8 @@ container and is not duplicated inside an ordinary activity group.
 Both modes start an active whole-process disclosure expanded and collapse it on
 completion. The active-to-completed transition uses a new process identity so
 active nested interaction cannot keep completed history expanded. The header
-shows its failure/issue marker whenever the process has issues, including while
-folded, matching compact nested activity groups. Reopening after completion
+shows an icon-only failure/issue marker whenever the process has issues,
+including while folded. Reopening after completion
 survives subsequent updates; search navigation opens the containing process,
 then the activity group that owns the named message. Item-level targeting is
 not part of this change.

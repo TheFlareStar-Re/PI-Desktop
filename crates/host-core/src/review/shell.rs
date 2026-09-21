@@ -35,7 +35,10 @@ pub struct CaptureResult {
 
 #[derive(Debug, Clone)]
 enum FileState {
-    Readable { hash: String, bytes: Vec<u8> },
+    Readable {
+        hash: String,
+        bytes: Option<Vec<u8>>,
+    },
     Unreadable,
 }
 
@@ -57,6 +60,10 @@ struct ScanResult {
     files: BTreeMap<String, FileState>,
     manifest_complete: bool,
     content_complete: bool,
+    #[cfg(test)]
+    hashed_bytes: u64,
+    #[cfg(test)]
+    retained_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -177,7 +184,12 @@ fn sample_path(root: &Path, relative: &str) -> Result<Option<(String, Vec<u8>)>>
     }
 }
 
-fn scan_workspace(root: &Path, excluded_roots: &[PathBuf], capture_bytes: bool) -> ScanResult {
+fn scan_workspace(
+    root: &Path,
+    excluded_roots: &[PathBuf],
+    capture_bytes: bool,
+    before_files: Option<&BTreeMap<String, FileState>>,
+) -> ScanResult {
     let started = Instant::now();
     let mut walker = WalkBuilder::new(root);
     walker.hidden(false).follow_links(false);
@@ -188,6 +200,8 @@ fn scan_workspace(root: &Path, excluded_roots: &[PathBuf], capture_bytes: bool) 
     let mut files = BTreeMap::new();
     let mut manifest_complete = true;
     let mut content_complete = true;
+    #[cfg(test)]
+    let mut retained_bytes = 0_u64;
     for entry in walker.build() {
         entries += 1;
         if entries > MAX_WALK_ENTRIES || started.elapsed() > MAX_CAPTURE_TIME {
@@ -239,6 +253,19 @@ fn scan_workspace(root: &Path, excluded_roots: &[PathBuf], capture_bytes: bool) 
         match sample_path(root, &relative) {
             Ok(Some((hash, bytes))) => {
                 total_bytes += bytes.len() as u64;
+                let retain_bytes = capture_bytes
+                    || match before_files.and_then(|files| files.get(&relative)) {
+                        Some(FileState::Readable {
+                            hash: before_hash, ..
+                        }) => before_hash != &hash,
+                        Some(FileState::Unreadable) => false,
+                        None => true,
+                    };
+                let bytes = retain_bytes.then_some(bytes);
+                #[cfg(test)]
+                if let Some(bytes) = bytes.as_ref() {
+                    retained_bytes += bytes.len() as u64;
+                }
                 files.insert(relative, FileState::Readable { hash, bytes });
             }
             Ok(None) | Err(_) => {
@@ -251,6 +278,10 @@ fn scan_workspace(root: &Path, excluded_roots: &[PathBuf], capture_bytes: bool) 
         files,
         manifest_complete,
         content_complete,
+        #[cfg(test)]
+        hashed_bytes: total_bytes,
+        #[cfg(test)]
+        retained_bytes,
     }
 }
 
@@ -345,7 +376,7 @@ pub fn prepare(
         .into_iter()
         .flatten(),
     );
-    let before = scan_workspace(&root, &excluded_roots, true);
+    let before = scan_workspace(&root, &excluded_roots, true, None);
     let policy = snapshot_policy(&root, &excluded_roots);
     Ok(Some(ShellCapture {
         data_dir: data_dir.to_path_buf(),
@@ -384,12 +415,12 @@ fn persist_candidate(capture: &ShellCapture, candidate: Candidate) -> Result<Rev
 }
 
 impl ShellCapture {
-    pub fn finish(self, process_complete: bool) -> CaptureResult {
+    pub fn finish(mut self, process_complete: bool) -> CaptureResult {
         let policy_after = snapshot_policy(&self.root, &self.excluded_roots);
         let policy_drift = !self.policy.complete
             || !policy_after.complete
             || self.policy.files != policy_after.files;
-        let after = scan_workspace(&self.root, &self.excluded_roots, false);
+        let after = scan_workspace(&self.root, &self.excluded_roots, false, Some(&self.before));
         let mut paths = BTreeSet::new();
         paths.extend(self.before.keys().cloned());
         paths.extend(after.files.keys().cloned());
@@ -399,57 +430,71 @@ impl ShellCapture {
             || !after.content_complete
             || policy_drift
             || !process_complete;
+        let mut after_files = after.files;
         let mut candidates = Vec::new();
         for path in paths {
-            let before = self.before.get(&path);
-            let after_state = after.files.get(&path);
+            let before = self.before.remove(&path);
+            let after_state = after_files.remove(&path);
             let candidate = match (before, after_state) {
                 (
                     Some(FileState::Readable {
                         hash: before_hash,
-                        bytes: before_bytes,
+                        bytes: Some(before_bytes),
                     }),
                     Some(FileState::Readable {
                         hash: after_hash,
-                        bytes: after_bytes,
+                        bytes: Some(after_bytes),
                     }),
                 ) if before_hash != after_hash => Some(Candidate {
                     path,
-                    before: Some(before_bytes.clone()),
-                    after: Some(after_bytes.clone()),
-                    after_hash: Some(after_hash.clone()),
+                    before: Some(before_bytes),
+                    after: Some(after_bytes),
+                    after_hash: Some(after_hash),
                 }),
-                (Some(FileState::Readable { bytes, .. }), None) => {
-                    match sample_path(&self.root, &path) {
-                        Ok(None) => Some(Candidate {
-                            path,
-                            before: Some(bytes.clone()),
-                            after: None,
-                            after_hash: None,
-                        }),
-                        Ok(Some(_)) | Err(_) => {
-                            partial = true;
-                            None
-                        }
+                (
+                    Some(FileState::Readable {
+                        hash: before_hash, ..
+                    }),
+                    Some(FileState::Readable {
+                        hash: after_hash, ..
+                    }),
+                ) if before_hash == after_hash => None,
+                (
+                    Some(FileState::Readable {
+                        bytes: Some(bytes), ..
+                    }),
+                    None,
+                ) => match sample_path(&self.root, &path) {
+                    Ok(None) => Some(Candidate {
+                        path,
+                        before: Some(bytes),
+                        after: None,
+                        after_hash: None,
+                    }),
+                    Ok(Some(_)) | Err(_) => {
+                        partial = true;
+                        None
                     }
-                }
+                },
                 (
                     None,
                     Some(FileState::Readable {
                         hash: after_hash,
-                        bytes: after_bytes,
+                        bytes: Some(after_bytes),
                     }),
                 ) if self.pre_manifest_complete && !policy_drift => Some(Candidate {
                     path,
                     before: None,
-                    after: Some(after_bytes.clone()),
-                    after_hash: Some(after_hash.clone()),
+                    after: Some(after_bytes),
+                    after_hash: Some(after_hash),
                 }),
                 (Some(FileState::Unreadable), _) | (_, Some(FileState::Unreadable)) => {
                     partial = true;
                     None
                 }
-                (None, Some(FileState::Readable { .. })) => {
+                (None, Some(FileState::Readable { .. }))
+                | (Some(FileState::Readable { .. }), Some(FileState::Readable { .. }))
+                | (Some(FileState::Readable { bytes: None, .. }), None) => {
                     partial = true;
                     None
                 }
@@ -519,15 +564,21 @@ mod tests {
         let result = capture.finish(true);
         assert_eq!(result.status, CaptureStatus::Complete);
         assert_eq!(result.reviews.len(), 3);
+        for (path, status) in [
+            ("add.txt", ReviewChangeStatus::Added),
+            ("edit.txt", ReviewChangeStatus::Modified),
+            ("delete.txt", ReviewChangeStatus::Deleted),
+        ] {
+            assert_eq!(
+                result
+                    .reviews
+                    .iter()
+                    .find(|item| item.path == path)
+                    .map(|item| item.status),
+                Some(status)
+            );
+        }
         assert!(!result.reviews.iter().any(|item| item.path == "dirty.txt"));
-        assert!(result
-            .reviews
-            .iter()
-            .any(|item| item.status == ReviewChangeStatus::Added));
-        assert!(result
-            .reviews
-            .iter()
-            .any(|item| item.status == ReviewChangeStatus::Deleted));
     }
 
     #[test]
@@ -684,6 +735,48 @@ mod tests {
         let result = capture.finish(true);
         assert_eq!(result.status, CaptureStatus::Complete);
         assert!(result.reviews.is_empty());
+    }
+
+    #[test]
+    fn post_scan_retains_only_changed_or_added_bytes_within_hash_bound() {
+        let workspace = tempdir().unwrap();
+        let unchanged = vec![b'u'; 32 * 1024];
+        let changed_before = vec![b'b'; 24 * 1024];
+        let changed_after = vec![b'a'; 20 * 1024];
+        let added = vec![b'n'; 12 * 1024];
+        fs::write(workspace.path().join("unchanged.bin"), &unchanged).unwrap();
+        fs::write(workspace.path().join("changed.bin"), &changed_before).unwrap();
+        let before = scan_workspace(workspace.path(), &[], true, None);
+        fs::write(workspace.path().join("changed.bin"), &changed_after).unwrap();
+        fs::write(workspace.path().join("added.bin"), &added).unwrap();
+
+        let after = scan_workspace(workspace.path(), &[], false, Some(&before.files));
+
+        assert_eq!(
+            after.hashed_bytes,
+            (unchanged.len() + changed_after.len() + added.len()) as u64
+        );
+        assert_eq!(
+            after.retained_bytes,
+            (changed_after.len() + added.len()) as u64
+        );
+        assert!(after.hashed_bytes <= MAX_TOTAL_HASH_BYTES);
+        assert!(matches!(
+            after.files.get("unchanged.bin"),
+            Some(FileState::Readable { bytes: None, .. })
+        ));
+        assert!(matches!(
+            after.files.get("changed.bin"),
+            Some(FileState::Readable {
+                bytes: Some(bytes), ..
+            }) if bytes == &changed_after
+        ));
+        assert!(matches!(
+            after.files.get("added.bin"),
+            Some(FileState::Readable {
+                bytes: Some(bytes), ..
+            }) if bytes == &added
+        ));
     }
 
     #[cfg(unix)]

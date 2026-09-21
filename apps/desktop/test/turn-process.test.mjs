@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
 register(new URL("./helpers/ts-import-hooks.mjs", import.meta.url));
@@ -311,4 +312,15 @@ test("settings writes validate the mode without changing other preferences", asy
     () => validateSettingsWrite({ ...settings, thinkingDisplayMode: "unknown" }),
     /thinkingDisplayMode is invalid/,
   );
+});
+
+test("settling the process changes identity without remounting the subtree", async () => {
+  const source = await readFile(
+    new URL("../src/features/chat/transcript/TurnProcess.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /key=\{phase\}/);
+  assert.match(source, /identity=\{disclosureKey\("turn", turnId, phase\)\}/);
+  assert.match(source, /timing=\{processTiming\}|timing: TurnProcessTiming/);
+  assert.match(source, /const summary = useMemo\(/);
 });
