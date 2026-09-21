@@ -842,7 +842,8 @@ the existing Task topology remains the container for delegated work.
 
 The whole process starts expanded while active. Completion resets it to collapsed,
 including after active interaction or failed/denied tool calls, by using a new
-process identity. The header shows a failure/issue marker only while expanded;
+process identity. The header shows a failure/issue marker whenever the process
+has issues, including while folded, matching compact nested activity groups;
 completed manual reopening and new search reveals remain effective. The header
 shows elapsed time and a tool count. Elapsed time starts at the initiating user
 message when loaded, otherwise at the first valid assistant/tool timestamp, and
@@ -877,9 +878,12 @@ reachable outside a hidden process. See
 
 ### Task timestamp and recorded file summary
 
-User messages show a semantic `time` above the bubble, formatted in the current
-UI locale and local timezone from the persisted `createdAt`. Invalid timestamps
-are omitted. Optimistic messages use their send timestamp until acknowledged.
+User messages show a semantic `time` in the hover action chrome under the bubble,
+formatted in the current UI locale and local timezone from the persisted
+`createdAt`. Completed assistant turns show the same hover timestamp from the
+recorded process end. Invalid timestamps are omitted. Optimistic messages use
+their send timestamp until acknowledged. The timestamp stays in the existing
+hover/focus-within action row and is not shown at rest.
 
 An inactive assistant turn shows a file summary below the response when its
 loaded top-level tool messages contain workspace Write/Edit or captured Bash

@@ -133,7 +133,7 @@ function TurnProcessDisclosure({
             { time: formatToolDuration(seconds) },
           )}
         </span>
-        {issueCount > 0 && disclosure.open ? (
+        {issueCount > 0 ? (
           <span className="turn-process-error">
             <IconCircleAlert size={14} aria-hidden />
             {t("chat.activityFailures", { count: issueCount })}

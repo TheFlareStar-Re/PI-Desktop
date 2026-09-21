@@ -144,11 +144,6 @@ export const MessageRow = memo(function MessageRow({
       aria-label={isSessionMessage ? t("sessionCollaboration.agentMessage") : isUser ? t("chat.userMessage") : t("chat.assistantMessage")}
     >
       <div className="message-col">
-        {userTimestamp ? (
-          <time className="message-timestamp" dateTime={userTimestamp.dateTime}>
-            {userTimestamp.label}
-          </time>
-        ) : null}
         {message.sessionMessage ? <SessionMessageOrigin origin={message.sessionMessage} /> : null}
         {isUser || displayed ? (
           <div className="message-bubble">
@@ -258,8 +253,13 @@ export const MessageRow = memo(function MessageRow({
             )}
           </div>
         ) : null}
-        {!editing && (hasAnswer || showRevisionPager) ? (
+        {!editing && (hasAnswer || showRevisionPager || userTimestamp) ? (
           <div className="message-actions">
+            {userTimestamp ? (
+              <time className="message-timestamp" dateTime={userTimestamp.dateTime}>
+                {userTimestamp.label}
+              </time>
+            ) : null}
             {showRevisionPager ? (
               <div className="message-revision-pager" role="group" aria-label={t("chat.revisions")}>
                 <TooltipButton

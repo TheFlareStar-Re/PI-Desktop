@@ -49,6 +49,10 @@
   white-space: nowrap;
 }
 
+.message-actions .message-timestamp {
+  padding-inline: 6px;
+}
+
 /* Composer chips use `max-width: min(100%, 240px)` so they shrink in a
    definite composer. Inside this shrink-to-fit plate the percentage
    containing block is the available thread width, which stretches the

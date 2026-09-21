@@ -266,6 +266,11 @@ test("message timestamps use locale formatting and reject invalid dates", () => 
     formatMessageTimestamp(value, "de-DE").label,
   );
   assert.equal(formatMessageTimestamp("not-a-date", "en-US"), undefined);
+  assert.deepEqual(formatMessageTimestamp(Date.parse(value), "en-US"), {
+    dateTime: value,
+    label: formatMessageTimestamp(value, "en-US").label,
+  });
+  assert.equal(formatMessageTimestamp(undefined, "en-US"), undefined);
 });
 
 test("user boundaries retain independent processes and delegation details stay attached", () => {

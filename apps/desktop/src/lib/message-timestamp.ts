@@ -4,9 +4,10 @@ export type MessageTimestamp = {
 };
 
 export function formatMessageTimestamp(
-  value: string,
+  value: string | number | undefined,
   locale?: string,
 ): MessageTimestamp | undefined {
+  if (value === undefined || value === "") return undefined;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return undefined;
   const label = new Intl.DateTimeFormat(locale || undefined, {
