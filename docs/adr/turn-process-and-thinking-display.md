@@ -2,8 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-09-17
-- Amended: 2026-09-20
-- Issues: #510, #461
+- Amended: 2026-09-21
+- Issues: #510, #461, #639
 - Amends: D071, [ADR 0242](0242-delta-only-streaming-updates.md)
 
 ## Context
@@ -51,7 +51,8 @@ container and is not duplicated inside an ordinary activity group.
 Both modes start an active whole-process disclosure expanded and collapse it on
 completion. The active-to-completed transition uses a new process identity so
 active nested interaction cannot keep completed history expanded. The header
-shows its failure/issue marker only while expanded. Reopening after completion
+shows its failure/issue marker whenever the process has issues, including while
+folded, matching compact nested activity groups. Reopening after completion
 survives subsequent updates; search navigation opens the containing process,
 then the activity group that owns the named message. Item-level targeting is
 not part of this change.
@@ -83,8 +84,8 @@ running state, and issue counts; they do not double-count delegated child work
 or treat a failed child as a failed assistant turn. Process durations start at
 the initiating user timestamp when loaded, fall back to the first valid part
 timestamp, and end at recorded message/tool completion. A live UI clock adds no
-persisted fields. User bubbles display a localized semantic time from their
-existing timestamp.
+persisted fields. User bubbles and completed assistant turns display a localized
+semantic time from existing timestamps in the hover action chrome.
 
 ## Consequences
 

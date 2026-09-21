@@ -14148,7 +14148,7 @@ plugin-form fixtures in an isolated temporary directory at runtime.
   including after active nested interaction or failed/denied calls. Completed
   manual reopening survives updates; search reveals the process and activity
   group that own the named message once per request. The header's failure/issue
-  marker appears only while expanded. Detailed auto-opens only an eligible
+  marker remains visible while folded. Detailed auto-opens only an eligible
   literal final tool/search item of the last activity group; it does not scan
   past thinking, and failed/denied leaves stay closed. The active multi-item
   group is open and an untouched group closes on completion. Compact starts
@@ -14158,11 +14158,12 @@ plugin-form fixtures in an isolated temporary directory at runtime.
   Renderer restart reapplies defaults. Item-level targeting is not part of this
   change, and Compact reasoning requires an explicit switch to Detailed. Saved
   mode survives restart and a missing/unknown setting resolves to Detailed.
-  User messages display a localized time; process elapsed time includes the
-  loaded initiating user's timestamp and falls back safely when the user row or
-  a valid timestamp is unavailable. Marked supplements remain ordered inside one
-  active process and do not fold preceding work on arrival. Task completion
-  folds the supplemental bubbles and both work segments together.
+  User and completed assistant messages display a localized time in the hover
+  action chrome; process elapsed time includes the loaded initiating user's
+  timestamp and falls back safely when the user row or a valid timestamp is
+  unavailable. Marked supplements remain ordered inside one active process and
+  do not fold preceding work on arrival. Task completion folds the supplemental
+  bubbles and both work segments together.
   Reopening/search reveals their text and files; final response and file summary
   stay singular. Unmarked new tasks, including queued **Send now** prompts, and
   missing legacy markers do not merge; unloaded task history is not guessed.

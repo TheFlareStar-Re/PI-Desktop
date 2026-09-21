@@ -29,7 +29,9 @@ import {
 import {
   isLastActivityPart,
   projectTurnProcess,
+  turnProcessTiming,
 } from "../../../lib/turn-process";
+import { formatMessageTimestamp } from "../../../lib/message-timestamp";
 import { useAppStore } from "../../../stores/app-store";
 import { Markdown } from "../../../components/Markdown";
 import { IconBranch, IconReview } from "../../../components/icons";
@@ -242,7 +244,7 @@ export const AssistantTurn = memo(function AssistantTurn({
   isActive,
   runtimeActivity,
 }: AssistantTurnProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const openTranscriptMenu = useTranscriptMenu();
   const { copyText, selectText } = useChatTextActions();
   const retryAssistantMessage = useAppStore((s) => s.retryAssistantMessage);
@@ -273,6 +275,12 @@ export const AssistantTurn = memo(function AssistantTurn({
     !isActive && !hasError && Boolean(content) && Boolean(actionMessage);
   const streaming =
     isActive && messages.some((message) => message.status === "streaming");
+  const completedTimestamp = isActive
+    ? undefined
+    : formatMessageTimestamp(
+        turnProcessTiming(entry.parts, entry.startedAt).endedAt,
+        i18n.resolvedLanguage ?? i18n.language,
+      );
   /*
     The turn owns the menu for its whole subtree, the answer rows it renders
     included: Regenerate and Branch act on the turn's answer message, so a menu
@@ -429,6 +437,11 @@ export const AssistantTurn = memo(function AssistantTurn({
         ) : null}
         {complete && actionMessage ? (
           <div className="message-actions">
+            {completedTimestamp ? (
+              <time className="message-timestamp" dateTime={completedTimestamp.dateTime}>
+                {completedTimestamp.label}
+              </time>
+            ) : null}
             <CopyButton text={content} label={t("chat.copy")} />
             <TooltipButton
               className="copy-btn icon"

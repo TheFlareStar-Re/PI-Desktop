@@ -825,11 +825,12 @@ may be retained while exactly one workspace supplies the visible shell context.
 - Processes start expanded while active. Completion resets them to collapsed,
   including after active nested clicks, keyboard interaction or failed/denied
   calls, by using a new process identity. The header shows a failure/issue
-  marker only while expanded. Reopening a completed process and new search
-  reveals remain effective. The header updates elapsed time once per second
-  while active and shows the tool count. The loaded initiating user's timestamp
-  supplies the start when available; user bubbles also show that timestamp in
-  the current locale.
+  marker whenever the process has issues, including while folded. Reopening a
+  completed process and new search reveals remain effective. The header updates
+  elapsed time once per second while active and shows the tool count. The loaded
+  initiating user's timestamp supplies the start when available; user bubbles
+  and completed assistant turns show that wall-clock time in the hover action
+  chrome, in the current locale.
 - Detailed starts the active ordinary group open and closes it when it completes
   only if untouched; completed groups otherwise start closed. Compact starts
   nested groups closed. In Detailed, leaf auto-open applies only when the

@@ -187,8 +187,8 @@ export async function turnProcessProbe() {
       `${mode} completion folds the entire interacted process`,
     );
     check(
-      !header()?.querySelector(".turn-process-error"),
-      `${mode} completed folded header omits the failure marker`,
+      Boolean(header()?.querySelector(".turn-process-error")),
+      `${mode} completed folded header keeps the failure marker`,
     );
     check(
       visible(container.querySelector('[data-message-id="recovered-answer"]')),
@@ -501,8 +501,8 @@ export async function turnProcessProbe() {
     check(
       header()?.getAttribute("aria-expanded") === "false" &&
         !visible(process()) &&
-        !header()?.querySelector(".turn-process-error"),
-      "completed tool failures stay folded without a header marker",
+        Boolean(header()?.querySelector(".turn-process-error")),
+      "completed tool failures stay folded with a header marker",
     );
 
     let saved: Partial<AppSettings> | undefined;
@@ -595,6 +595,25 @@ export async function turnProcessProbe() {
       "presentation never deletes reasoning data",
     );
 
+    render(messages, false, null, "completed-timestamp");
+    const assistantTime = container.querySelector<HTMLTimeElement>(
+      ".assistant-turn .message-actions .message-timestamp",
+    );
+    const assistantActions = container.querySelector<HTMLElement>(
+      ".assistant-turn .message-actions",
+    );
+    const expectedEnd = new Intl.DateTimeFormat(
+      i18n.resolvedLanguage ?? i18n.language,
+      { dateStyle: "medium", timeStyle: "short" },
+    ).format(new Date("2026-09-17T00:00:04.000Z"));
+    check(
+      assistantTime?.dateTime === "2026-09-17T00:00:04.000Z" &&
+        assistantTime.textContent === expectedEnd &&
+        Boolean(assistantActions?.contains(assistantTime)) &&
+        getComputedStyle(assistantActions!).opacity === "0",
+      "completed assistant timestamp lives in hidden hover action chrome",
+    );
+
     const userTimestamp = "2026-09-17T13:45:00.000Z";
     renderUserMessage(
       message("timestamp-user", "user", "Timestamped request", {
@@ -602,6 +621,7 @@ export async function turnProcessProbe() {
       }),
     );
     const time = container.querySelector<HTMLTimeElement>(".message-timestamp");
+    const actions = container.querySelector<HTMLElement>(".message-actions");
     const bubble = container.querySelector(".message-bubble");
     const expectedTimestamp = new Intl.DateTimeFormat(
       i18n.resolvedLanguage ?? i18n.language,
@@ -610,12 +630,14 @@ export async function turnProcessProbe() {
     check(
       time?.dateTime === userTimestamp &&
         time.textContent === expectedTimestamp &&
+        Boolean(actions?.contains(time)) &&
         Boolean(
           bubble &&
-            (time.compareDocumentPosition(bubble) &
+            (bubble.compareDocumentPosition(time) &
               Node.DOCUMENT_POSITION_FOLLOWING),
-        ),
-      "user timestamp is semantic, localized, and placed above the bubble",
+        ) &&
+        getComputedStyle(actions!).opacity === "0",
+      "user timestamp is semantic, localized, and only in the hover action chrome",
     );
     renderUserMessage(
       message("invalid-timestamp", "user", "Invalid timestamp", {
