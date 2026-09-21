@@ -166,3 +166,5 @@ export function turnProcessTiming(
   );
   return { startedAt, endedAt };
 }
+
+export type TurnProcessTiming = ReturnType<typeof turnProcessTiming>;

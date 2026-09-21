@@ -5,13 +5,13 @@ import {
 } from "./assistant-turns";
 import {
   reviewCaptureFromMessage,
-  reviewChangesFromMessage,
-  type ReviewChangeEntry,
+  reviewChangesMetadataFromMessage,
+  type ReviewChangeMetadataEntry,
 } from "./workspace-review";
 
 export type TurnFileGroup = {
   path: string;
-  entries: ReviewChangeEntry[];
+  entries: ReviewChangeMetadataEntry[];
   activeOperationCount: number;
   rolledBackOperationCount: number;
   additions: number;
@@ -33,7 +33,7 @@ export type TurnFileSummaryData = {
   hasExcludedSubagentEdits: boolean;
 };
 
-type IndexedReviewChange = ReviewChangeEntry & { index: number };
+type IndexedReviewChange = ReviewChangeMetadataEntry & { index: number };
 
 function delegateToolMessages(entry: AssistantTurnEntry): UiMessage[] {
   return entry.parts.flatMap((part) =>
@@ -63,7 +63,7 @@ export function summarizeTurnFileChanges(
   let sequence = 0;
 
   for (const message of tools) {
-    for (const change of reviewChangesFromMessage(message)) {
+    for (const change of reviewChangesMetadataFromMessage(message)) {
       latestBySnapshot.set(change.snapshotId, {
         message,
         change,
@@ -130,7 +130,7 @@ export function summarizeTurnFileChanges(
       hasUnavailableCapture: captures.includes("unavailable"),
       hasExcludedSubagentEdits: delegates.some(
         (message) =>
-          reviewChangesFromMessage(message).length > 0 ||
+          reviewChangesMetadataFromMessage(message).length > 0 ||
           (message.toolStatus === "success" &&
             (message.toolName === "Write" || message.toolName === "Edit")),
       ),

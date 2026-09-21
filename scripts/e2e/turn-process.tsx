@@ -173,13 +173,22 @@ export async function turnProcessProbe() {
       header()?.getAttribute("aria-expanded") === "true" && visible(process()),
       `${mode} active recovery process opens automatically`,
     );
+    const nestedRow = container.querySelector('[data-message-id="denied-write"]');
     const nestedHeader = container.querySelector<HTMLButtonElement>(
       '[data-message-id="denied-write"] .tool-row-header',
     );
+    const groupHeader = nestedRow?.closest(".process-activity-group")
+      ?.querySelector<HTMLButtonElement>(":scope > .tool-activity-header");
+    if (groupHeader?.getAttribute("aria-expanded") === "false") click(groupHeader);
     click(nestedHeader);
     check(
       nestedHeader?.getAttribute("aria-expanded") === "true",
       `${mode} active nested interaction expands tool details`,
+    );
+    flushSync(() => nestedHeader?.focus());
+    check(
+      document.activeElement === nestedHeader,
+      `${mode} nested tool owns focus before completion`,
     );
     render(completedRecovery, false, null, key);
     check(
@@ -187,8 +196,17 @@ export async function turnProcessProbe() {
       `${mode} completion folds the entire interacted process`,
     );
     check(
-      Boolean(header()?.querySelector(".turn-process-error")),
-      `${mode} completed folded header keeps the failure marker`,
+      container.querySelector('[data-message-id="denied-write"]') === nestedRow,
+      `${mode} completion does not remount nested process children`,
+    );
+    check(
+      document.activeElement === header(),
+      `${mode} completion returns nested focus to the process header`,
+    );
+    const foldedMarker = header()?.querySelector(".turn-process-error");
+    check(
+      Boolean(foldedMarker) && !(foldedMarker?.textContent || "").trim(),
+      `${mode} completed folded header keeps an icon-only failure marker`,
     );
     check(
       visible(container.querySelector('[data-message-id="recovered-answer"]')),
@@ -501,8 +519,9 @@ export async function turnProcessProbe() {
     check(
       header()?.getAttribute("aria-expanded") === "false" &&
         !visible(process()) &&
-        Boolean(header()?.querySelector(".turn-process-error")),
-      "completed tool failures stay folded with a header marker",
+        Boolean(header()?.querySelector(".turn-process-error")) &&
+        !(header()?.querySelector(".turn-process-error")?.textContent || "").trim(),
+      "completed tool failures stay folded with an icon-only header marker",
     );
 
     let saved: Partial<AppSettings> | undefined;
@@ -613,6 +632,12 @@ export async function turnProcessProbe() {
         getComputedStyle(assistantActions!).opacity === "0",
       "completed assistant timestamp lives in hidden hover action chrome",
     );
+    document.documentElement.classList.add("pointer-outside");
+    check(
+      getComputedStyle(assistantActions!).opacity === "0",
+      "assistant timestamp stays hidden when the pointer leaves the window",
+    );
+    document.documentElement.classList.remove("pointer-outside");
 
     const userTimestamp = "2026-09-17T13:45:00.000Z";
     renderUserMessage(
@@ -639,6 +664,12 @@ export async function turnProcessProbe() {
         getComputedStyle(actions!).opacity === "0",
       "user timestamp is semantic, localized, and only in the hover action chrome",
     );
+    document.documentElement.classList.add("pointer-outside");
+    check(
+      getComputedStyle(actions!).opacity === "0",
+      "user timestamp stays hidden when the pointer leaves the window",
+    );
+    document.documentElement.classList.remove("pointer-outside");
     renderUserMessage(
       message("invalid-timestamp", "user", "Invalid timestamp", {
         createdAt: "not-a-date",

@@ -11,8 +11,8 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::transcripts::{self, CompactionRecord, MessageRecord, RevisionRecord};
 
-mod fork_files;
 mod display;
+mod fork_files;
 
 use display::record_to_ui_for_display;
 

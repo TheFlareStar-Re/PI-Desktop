@@ -1,5 +1,5 @@
 import type { SubagentOutcome } from "../../../lib/subagent-topology";
-import { useContext, useEffect, useId, useState, type ReactNode } from "react";
+import { useContext, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { AssistantTurnPart } from "../../../lib/assistant-turns";
 import { formatToolDuration } from "../../../lib/tool-display";
@@ -10,8 +10,8 @@ import {
   processContainsMessage,
   resolveThinkingDisplayMode,
   shouldAutoOpenTurnProcess,
-  turnProcessTiming,
   visibleProcessSteps,
+  type TurnProcessTiming,
 } from "../../../lib/turn-process";
 import { useAppStore } from "../../../stores/app-store";
 import {
@@ -26,7 +26,7 @@ export function TurnProcess({
   turnId,
   processParts,
   turnParts,
-  startedAt,
+  timing,
   isActive,
   delegationStatuses,
   children,
@@ -34,7 +34,7 @@ export function TurnProcess({
   turnId: string;
   processParts: readonly AssistantTurnPart[];
   turnParts: readonly AssistantTurnPart[];
-  startedAt?: string;
+  timing: TurnProcessTiming;
   isActive: boolean;
   delegationStatuses?: ReadonlyMap<string, SubagentOutcome>;
   children: ReactNode;
@@ -43,24 +43,38 @@ export function TurnProcess({
     resolveThinkingDisplayMode(state.settings?.thinkingDisplayMode),
   );
   const search = useContext(TranscriptSearchContext);
-  const revealRequest =
-    search && processContainsMessage(processParts, search.messageId)
-      ? search.requestId
-      : undefined;
-  const summary = activitySummary(
-    processParts.flatMap((part) => (part.kind === "activity" ? part.items : [])),
-    delegationStatuses,
+  const revealRequest = useMemo(
+    () =>
+      search && processContainsMessage(processParts, search.messageId)
+        ? search.requestId
+        : undefined,
+    [processParts, search],
   );
-  const thinkingNow = isTurnThinking(turnParts, isActive);
+  const processItems = useMemo(
+    () => processParts.flatMap((part) => (part.kind === "activity" ? part.items : [])),
+    [processParts],
+  );
+  const summary = useMemo(
+    () => activitySummary(processItems, delegationStatuses),
+    [processItems, delegationStatuses],
+  );
+  const thinkingNow = useMemo(
+    () => isTurnThinking(turnParts, isActive),
+    [turnParts, isActive],
+  );
+  const stepCount = useMemo(
+    () => visibleProcessSteps(processParts, mode, isActive),
+    [processParts, mode, isActive],
+  );
   const [now, setNow] = useState(Date.now);
-  const { startedAt: timingStart, endedAt } = turnProcessTiming(turnParts, startedAt);
+  const { startedAt: timingStart, endedAt } = timing;
   useEffect(() => {
     if (!isActive) return;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [isActive]);
-  if (visibleProcessSteps(processParts, mode, isActive) === 0) return null;
+  if (stepCount === 0) return null;
   const seconds =
     timingStart === undefined
       ? 0
@@ -71,7 +85,6 @@ export function TurnProcess({
   const phase = isActive ? "active" : "settled";
   return (
     <TurnProcessDisclosure
-      key={phase}
       identity={disclosureKey("turn", turnId, phase)}
       automaticOpen={shouldAutoOpenTurnProcess(mode, isActive, summary.issues > 0)}
       revealRequest={revealRequest}
@@ -134,9 +147,11 @@ function TurnProcessDisclosure({
           )}
         </span>
         {issueCount > 0 ? (
-          <span className="turn-process-error">
+          <span
+            className="turn-process-error"
+            aria-label={t("chat.activityFailures", { count: issueCount })}
+          >
             <IconCircleAlert size={14} aria-hidden />
-            {t("chat.activityFailures", { count: issueCount })}
           </span>
         ) : null}
         {toolCount > 0 ? (

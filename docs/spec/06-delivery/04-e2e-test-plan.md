@@ -14148,7 +14148,9 @@ plugin-form fixtures in an isolated temporary directory at runtime.
   including after active nested interaction or failed/denied calls. Completed
   manual reopening survives updates; search reveals the process and activity
   group that own the named message once per request. The header's failure/issue
-  marker remains visible while folded. Detailed auto-opens only an eligible
+  marker remains icon-only while folded or open, with its count in the accessible
+  name. The header stays content-sized in both states while details use the band.
+  Detailed auto-opens only an eligible
   literal final tool/search item of the last activity group; it does not scan
   past thinking, and failed/denied leaves stay closed. The active multi-item
   group is open and an untouched group closes on completion. Compact starts
@@ -14164,6 +14166,8 @@ plugin-form fixtures in an isolated temporary directory at runtime.
   unavailable. Marked supplements remain ordered inside one active process and
   do not fold preceding work on arrival. Task completion folds the supplemental
   bubbles and both work segments together.
+  Completion preserves the mounted process children while resetting only the
+  parent disclosure choice. Reopening retains the nested user choices.
   Reopening/search reveals their text and files; final response and file summary
   stay singular. Unmarked new tasks, including queued **Send now** prompts, and
   missing legacy markers do not merge; unloaded task history is not guessed.
@@ -14221,6 +14225,8 @@ plugin-form fixtures in an isolated temporary directory at runtime.
   nonzero exit, reload persisted multi-file evidence, roll back a single snapshot
   without changing siblings, and reject a conflict after a later external edit.
   Rust tests cover bounds, links, ignore rules and same-workspace serialization.
+  Performance regressions also cover unchanged post-scan file bodies not being
+  retained and metadata-only file summaries not reading diff hunks.
 - **Specs:** 04-ux/08-component-spec; ADR 0043.
 - **Status:** Task-candidate validation; no live provider or user data required.
 

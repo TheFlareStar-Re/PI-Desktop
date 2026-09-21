@@ -7,6 +7,7 @@ register(new URL("./helpers/ts-import-hooks.mjs", import.meta.url));
 const {
   reviewChangeFromMessage,
   reviewChangesFromMessage,
+  reviewChangesMetadataFromMessage,
   reviewChangesFromMessages,
   reviewCaptureFromMessage,
   withReviewChangeState,
@@ -190,4 +191,47 @@ test("session review history excludes nested delegate snapshots", () => {
     reviewChangesFromMessages([parent, nested]).map((entry) => entry.change.path),
     ["index.html", "styles.css"],
   );
+});
+
+test("metadata parse matches full records without loading hunks", () => {
+  const hunks = [
+    {
+      header: "@@ -1 +1 @@",
+      lines: [
+        { type: "del", text: "old" },
+        { type: "add", text: "next" },
+      ],
+    },
+  ];
+  const invalid = { ...review("snapshot-invalid", "bad.txt"), additions: -1 };
+  const malformed = { version: 2, snapshotId: "legacy", path: "legacy.txt" };
+  const message = tool({
+    toolResult: {
+      details: {
+        root: "workspace",
+        review: review("snapshot-legacy", "legacy.txt", { hunks }),
+        reviews: [
+          invalid,
+          malformed,
+          review("snapshot-html", "index.html", { hunks, additions: 9 }),
+        ],
+        reviewCapture: { status: "complete" },
+      },
+    },
+  });
+  const full = reviewChangesFromMessage(message);
+  const metadata = reviewChangesMetadataFromMessage(message);
+
+  assert.deepEqual(
+    metadata.map((change) => change.snapshotId),
+    full.map((change) => change.snapshotId),
+  );
+  assert.deepEqual(
+    metadata.map(({ hunks: _hunks, ...change }) => change),
+    full.map(({ hunks: _hunks, ...change }) => change),
+  );
+  assert.equal(full[0].hunks.length, 1);
+  assert.equal("hunks" in metadata[0], false);
+  assert.equal(reviewChangesFromMessage(tool({ toolStatus: "denied" })).length, 0);
+  assert.equal(reviewChangesMetadataFromMessage(tool({ toolStatus: "denied" })).length, 0);
 });

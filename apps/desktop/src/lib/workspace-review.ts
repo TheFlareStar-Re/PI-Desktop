@@ -25,9 +25,16 @@ const REVIEW_CAPTURE_STATUSES = new Set<ReviewCaptureStatus>([
 
 export type ReviewCaptureStatus = "complete" | "partial" | "unavailable";
 
+export type ReviewChangeMetadata = Omit<ReviewChange, "hunks">;
+
 export type ReviewChangeEntry = {
   message: UiMessage;
   change: ReviewChange;
+};
+
+export type ReviewChangeMetadataEntry = {
+  message: UiMessage;
+  change: ReviewChangeMetadata;
 };
 
 export type ReviewChangesSummary = {
@@ -87,7 +94,7 @@ function parseHunks(value: unknown): DiffHunk[] {
   });
 }
 
-function parseReviewChange(value: unknown): ReviewChange | null {
+function parseReviewChangeMetadata(value: unknown): ReviewChangeMetadata | null {
   const review = recordValue(value);
   if (!review || review.version !== 1) return null;
 
@@ -125,15 +132,26 @@ function parseReviewChange(value: unknown): ReviewChange | null {
     state: state as ReviewChangeState,
     additions,
     deletions,
-    hunks: parseHunks(review.hunks),
     ...(review.binary === true ? { binary: true } : {}),
     ...(review.truncated === true ? { truncated: true } : {}),
     reversible: review.reversible === true,
   };
 }
 
-/** Read every independently valid durable change record owned by one message. */
-export function reviewChangesFromMessage(message: UiMessage): ReviewChange[] {
+function parseReviewChange(value: unknown): ReviewChange | null {
+  const metadata = parseReviewChangeMetadata(value);
+  if (!metadata) return null;
+  return {
+    ...metadata,
+    hunks: parseHunks(recordValue(value)?.hunks),
+  };
+}
+
+function reviewRecordsFromMessage<T>(
+  message: UiMessage,
+  parse: (value: unknown) => T | null,
+  snapshotIdOf: (item: T) => string,
+): T[] {
   if (!isExecutedReviewTool(message)) return [];
   const details = toolResultDetails(message);
   if (details?.root !== "workspace") return [];
@@ -142,12 +160,32 @@ export function reviewChangesFromMessage(message: UiMessage): ReviewChange[] {
     ...(details.review === undefined ? [] : [details.review]),
     ...(Array.isArray(details.reviews) ? details.reviews : []),
   ];
-  const changes = new Map<string, ReviewChange>();
+  const changes = new Map<string, T>();
   for (const candidate of candidates) {
-    const change = parseReviewChange(candidate);
-    if (change) changes.set(change.snapshotId, change);
+    const change = parse(candidate);
+    if (change) changes.set(snapshotIdOf(change), change);
   }
   return [...changes.values()];
+}
+
+/** Read every independently valid durable change record owned by one message. */
+export function reviewChangesFromMessage(message: UiMessage): ReviewChange[] {
+  return reviewRecordsFromMessage(
+    message,
+    parseReviewChange,
+    (change) => change.snapshotId,
+  );
+}
+
+/** Same admission as full review parse, without walking diff hunks. */
+export function reviewChangesMetadataFromMessage(
+  message: UiMessage,
+): ReviewChangeMetadata[] {
+  return reviewRecordsFromMessage(
+    message,
+    parseReviewChangeMetadata,
+    (change) => change.snapshotId,
+  );
 }
 
 /** Compatibility wrapper for callers that still expect one review per message. */

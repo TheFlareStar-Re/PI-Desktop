@@ -824,13 +824,14 @@ may be retained while exactly one workspace supplies the visible shell context.
   redundant group. Existing Task topology remains separate.
 - Processes start expanded while active. Completion resets them to collapsed,
   including after active nested clicks, keyboard interaction or failed/denied
-  calls, by using a new process identity. The header shows a failure/issue
-  marker whenever the process has issues, including while folded. Reopening a
-  completed process and new search reveals remain effective. The header updates
+  calls, by using a new process identity. The header shows an icon-only
+  failure/issue marker whenever the process has issues, including while folded.
+  Reopening a completed process and new search reveals remain effective. The header updates
   elapsed time once per second while active and shows the tool count. The loaded
   initiating user's timestamp supplies the start when available; user bubbles
   and completed assistant turns show that wall-clock time in the hover action
-  chrome, in the current locale.
+  chrome, in the current locale. The chrome hides at rest and when the pointer
+  leaves the window.
 - Detailed starts the active ordinary group open and closes it when it completes
   only if untouched; completed groups otherwise start closed. Compact starts
   nested groups closed. In Detailed, leaf auto-open applies only when the

@@ -29,6 +29,8 @@ import {
 import {
   isLastActivityPart,
   projectTurnProcess,
+  resolveThinkingDisplayMode,
+  shouldGroupTurnProcess,
   turnProcessTiming,
 } from "../../../lib/turn-process";
 import { formatMessageTimestamp } from "../../../lib/message-timestamp";
@@ -275,10 +277,14 @@ export const AssistantTurn = memo(function AssistantTurn({
     !isActive && !hasError && Boolean(content) && Boolean(actionMessage);
   const streaming =
     isActive && messages.some((message) => message.status === "streaming");
+  const processTiming = useMemo(
+    () => turnProcessTiming(entry.parts, entry.startedAt),
+    [entry.parts, entry.startedAt],
+  );
   const completedTimestamp = isActive
     ? undefined
     : formatMessageTimestamp(
-        turnProcessTiming(entry.parts, entry.startedAt).endedAt,
+        processTiming.endedAt,
         i18n.resolvedLanguage ?? i18n.language,
       );
   /*
@@ -342,6 +348,11 @@ export const AssistantTurn = memo(function AssistantTurn({
   );
   statusesRef.current = turnDelegationStatuses;
   timingsRef.current = turnDelegationTimings;
+  const groupProcess = useAppStore((state) =>
+    shouldGroupTurnProcess(
+      resolveThinkingDisplayMode(state.settings?.thinkingDisplayMode),
+    ),
+  );
   const { process, responses } = projectTurnProcess(entry);
   const activePart = isActive ? entry.parts.at(-1) : undefined;
 
@@ -407,7 +418,7 @@ export const AssistantTurn = memo(function AssistantTurn({
               turnId={entry.id}
               processParts={process}
               turnParts={entry.parts}
-              startedAt={entry.startedAt}
+              timing={processTiming}
               isActive={isActive}
               delegationStatuses={turnDelegationStatuses}
             >
