@@ -5,6 +5,7 @@ import { I18nextProvider } from "react-i18next";
 import { en } from "@pi-desktop/i18n";
 import type { AppSettings, UiMessage } from "@pi-desktop/shared";
 import { AssistantTurn } from "../../apps/desktop/src/features/chat/transcript/AssistantTurn";
+import { TranscriptDisclosureProvider } from "../../apps/desktop/src/features/chat/transcript/disclosure";
 import { MessageRow } from "../../apps/desktop/src/features/chat/transcript/MessageRow";
 import { ThinkingDisplayModeRow } from "../../apps/desktop/src/components/settings/ThinkingDisplayModeRow";
 import { buildTranscriptEntries } from "../../apps/desktop/src/lib/assistant-turns";
@@ -69,14 +70,16 @@ export async function turnProcessProbe() {
     flushSync(() =>
       root.render(
         <I18nextProvider i18n={i18n}>
-          <TranscriptSearchContext.Provider value={search}>
-            <AssistantTurn
-              key={key}
-              entry={entry}
-              sessionId={undefined}
-              isActive={active}
-            />
-          </TranscriptSearchContext.Provider>
+          <TranscriptDisclosureProvider key={key}>
+            <TranscriptSearchContext.Provider value={search}>
+              <AssistantTurn
+                key={key}
+                entry={entry}
+                sessionId={undefined}
+                isActive={active}
+              />
+            </TranscriptSearchContext.Provider>
+          </TranscriptDisclosureProvider>
         </I18nextProvider>,
       ),
     );
@@ -193,8 +196,9 @@ export async function turnProcessProbe() {
     );
     click(header());
     check(
-      Boolean(header()?.querySelector(".turn-process-error")) &&
-        visible(container.querySelector('[data-message-id="denied-write"]')),
+      header()?.getAttribute("aria-expanded") === "true" &&
+        Boolean(header()?.querySelector(".turn-process-error")) &&
+        Boolean(process()?.querySelector('[data-message-id="denied-write"]')),
       `${mode} reopening preserves the failure marker and tool details`,
     );
     render(
@@ -415,8 +419,9 @@ export async function turnProcessProbe() {
       process()?.querySelectorAll(".tool-row").length === 2,
       "compact expanding retains both tools without thinking",
     );
-    render(messages, true, null, "compact-group");
-    render(messages, false, null, "compact-group");
+    render(messages, true, null, "compact-group-reset");
+    click(container.querySelector('[data-message-id="read"] .tool-row-header'));
+    render(messages, false, null, "compact-group-reset");
     check(
       header()?.getAttribute("aria-expanded") === "false" && !visible(process()),
       "active-to-complete transition resets a previously opened process",
