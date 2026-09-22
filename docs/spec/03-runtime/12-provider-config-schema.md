@@ -543,7 +543,9 @@ The canonical DDL lives in [04-data-storage](04-data-storage.md) (D086). Summary
   Copilot account lists what its subscription includes) instead of calling
   `/models`; each returned model carries the apiStyle its wire API implies.
   Static vendors such as `openai-codex` use the pinned pi-ai catalog (0.86.1
-  includes `gpt-6-astra`); models.dev does not invent those IDs.
+  includes `gpt-6-astra`); models.dev does not invent those IDs. `xai` is the
+  exception: conversation models come from `GET /v1/models` on the resolved
+  account token, and the pinned catalog is used only when that request fails.
 - out: `{ models: ModelCatalogItem[] }`; each known model carries the complete
   models.dev metadata including `reasoning`, `supportedThinkingLevels`, limits,
   modalities, output types, and capability tags. Cached/provider claims cannot

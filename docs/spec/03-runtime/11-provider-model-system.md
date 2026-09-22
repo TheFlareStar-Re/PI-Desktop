@@ -453,8 +453,13 @@ than probing `/models`, and the connection test proves the account by resolving
 auth. For static OAuth vendors such as ChatGPT Plus/Pro (`openai-codex`), that
 catalog is the pinned pi-ai model list rather than a live vendor `/models`
 probe, so a newly published account model such as `gpt-6-astra` appears only
-after the pin includes it. models.dev still supplies metadata once the ID is
-available, but it cannot add the ID to the authenticated list. A vendor may
+after the pin includes it. xAI (`xai`, the Grok/X subscription) is the
+exception: a successful `GET /v1/models` with the resolved account token is the
+list of conversation models the account may use, including an id the pinned
+pi-ai catalog does not know yet. Image and video generators in that payload
+are dropped. When the request fails, the pinned catalog remains the fallback.
+models.dev still supplies metadata once the ID is available, but it cannot add
+the ID to the authenticated list. A vendor may
 span wire APIs — Copilot serves Anthropic, Chat Completions and Responses
 models — so the row's `apiStyle` follows the selected model.
 Deleting a row calls the normal host `providers.delete` path, which removes its

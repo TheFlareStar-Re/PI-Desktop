@@ -20,6 +20,7 @@ import {
 } from "@pi-desktop/shared";
 import { useAppStore } from "../../stores/app-store";
 import { api } from "../../lib/api";
+import { providerDisplayName, providerSearchText } from "../../lib/provider-display";
 import { Badge, Button, Field, Input, TooltipButton, cx } from "../ui";
 import {
   IconCheck,
@@ -136,7 +137,7 @@ export function ModelConfigPage() {
     const query = defaultModelQuery.trim().toLowerCase();
     if (!query) return defaultModelOptionsList;
     return defaultModelOptionsList.filter(({ provider, modelId }) =>
-      `${provider.name} ${modelId}`.toLowerCase().includes(query),
+      `${providerSearchText(provider)} ${modelId}`.toLowerCase().includes(query),
     );
   }, [defaultModelOptionsList, defaultModelQuery]);
 
@@ -393,7 +394,9 @@ export function ModelConfigPage() {
               </div>
               {defaultProviderReady ? (
                 <div className="settings-row-detail model-default-value">
-                  <span className="model-default-provider">{defaultProvider.name}</span>
+                  <span className="model-default-provider">
+                    {providerDisplayName(defaultProvider)}
+                  </span>
                   <span className="model-default-sep" aria-hidden>
                     ·
                   </span>
@@ -467,14 +470,14 @@ export function ModelConfigPage() {
                               index > 0 && "has-divider",
                             )}
                           >
-                            {provider.name}
+                            {providerDisplayName(provider)}
                           </div>
                         ) : null}
                         <button
                           type="button"
                           role="option"
                           aria-selected={isCurrent}
-                          aria-label={`${provider.name} · ${modelId}`}
+                          aria-label={`${providerDisplayName(provider)} · ${modelId}`}
                           className={cx("model-default-option", isCurrent && "is-current")}
                           disabled={busyId === provider.id}
                           onClick={() => void setDefaultModel(provider, modelId)}

@@ -398,9 +398,9 @@ export function registerProviderIpc({
         }
       };
 
-      // A signed-in vendor account has no key to probe /models with, and pi-ai
-      // already knows which models the account may use (Copilot narrows the
-      // list to the subscription).
+      // A signed-in vendor account has no API key. Copilot and the static
+      // vendors are listed from pi-ai. xAI instead reads GET /v1/models with
+      // the account token inside VendorOAuth.listModels.
       if (req.source !== "cache" && provider?.authKind === OAUTH_AUTH_KIND) {
         try {
           const options = await vendorOAuth.listModels(provider.id);

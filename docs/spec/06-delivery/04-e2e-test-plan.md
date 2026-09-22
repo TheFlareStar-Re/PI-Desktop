@@ -3684,6 +3684,101 @@ identify the platform validation still needed.
   Copy must not load history until selected or change the reading position.
   Run `node scripts/e2e-copy-conversation.mjs`.
 
+#### E2E-CHAT-copy-formula-as-tex: Copying rendered math yields its source
+
+Math boundaries remain parseable after copying: touching inline fences get
+one separator, and every prose dollar in the copied text is escaped, together
+with backslash runs that would otherwise escape a fence.
+Annotation whitespace is preserved; widened multiline inline math uses a
+literal `<span>` wrapper to prevent a flow opener when pasted at column zero.
+TeX newlines are not flattened because they can terminate `%` comments.
+The wrapper is Markdown source in `text/plain`, not a `text/html` payload;
+compatibility with external editors that disallow inline HTML is not promised.
+Regression coverage checks both copy entry points and Markdown round trips
+for adjacent formulas, prose dollars on either side, formatting wrappers,
+line/block boundaries, padding, and multiline math including TeX comments.
+Display math containing `- x`, `+ x`, `* x`, `> x`, or internal blank lines
+must remain a single math node after copying. The shared remark grammar
+keeps unclosed math in the streaming tail until its fence closes; subsequent
+prose and its source offsets remain intact. A footnote whose definition
+follows its reference — adjacently or streamed in later — renders as a real
+reference and note section rather than a literal `[^1]`, which is what block
+splitting costs when a slice is parsed without the rest of the message.
+CRLF, ordinary lists, quotes, GFM tables, fenced code and the sources that
+must keep splitting are covered by `markdown-blocks.test.mjs`.
+
+
+- **Preconditions**: An assistant answer contains inline math inside a
+  sentence, a display formula on its own lines, a `\[ … \]` formula inside a
+  sentence and another on its own lines, a `\( … \)` formula, a formula
+  carrying a literal `$`, an inline formula whose value carries a newline and
+  another whose value carries one at each edge, a paragraph with
+  no math, and — each sharing a selection with a formula — a paragraph whose
+  source wrapped across several lines, a bulleted list, a table, a second
+  table whose cell holds a `\[ … \]` formula, a fenced
+  code block that contains blank lines, and a turn whose prose is interrupted
+  by chrome that is unselectable only because it inherits the shell's
+  `user-select: none` (a tool row's section head).
+- **Steps**: 1) Select the sentence holding the inline formula and press
+  Ctrl/Cmd+C. 2) Select the display formula and copy it. 3) Select from the
+  middle of a formula to the end of its sentence and copy. 4) Select a
+  paragraph, a formula, and another paragraph together and copy. 5) Select
+  prose with no formula in it and copy. 6) Copy each of the wrapped paragraph,
+  the list, both tables, and the code block. 7) Copy each `\[ … \]` formula, the
+  `\( … \)` one, the formula carrying a literal `$`, and the two whose values
+  carry newlines. 8) Select a formula backwards — from the end of the
+  sentence to its start — and copy. 9) With a formula selected, right-click
+  that turn and choose Copy, then right-click a different turn and choose Copy.
+  10) Select a turn's whole contents the way the Select text item does, so the
+  range is anchored on the turn while the copy is raised on a paragraph inside
+  it, and copy. 11) Select without ever leaving one formula — a drag inside its
+  rendering — and copy. 12) Render each result back through the same answer
+  renderer — what pasting it into the composer and sending it produces — and
+  compare the formulas it paints with the ones the selection covered.
+- **Expected**: Every formula reaches the clipboard as the TeX it was written
+  in — `$…$` inline, `$$…$$` on its own lines — instead of the glyphs KaTeX
+  painted, or the same expression twice over from its two trees. A formula
+  carrying a literal `$` widens its delimiter run past it, as a code span's
+  fence does, and pastes back as the formula rather than as prose; an inline
+  formula whose value carries a newline keeps the narrow run, because a `$$`
+  run at the start of a line would open a flow block and swallow the
+  paragraph; one whose value carries a newline at each edge is written with
+  padding of its own, because the grammar drops a line ending there as it
+  drops a space. A cut that
+  starts inside a formula copies the whole formula, and a selection that never
+  leaves one copies that formula alone. Everything else in the
+  selection is byte for byte what the platform already copied: a wrapped
+  paragraph stays one line, a list keeps one line per item, a table keeps tabs
+  between cells and one line per row including the newline the platform closes
+  the last row with, and a code block keeps its blank lines. Chrome the copy
+  leaves behind stays out of the clipboard whether `base.css` marks it
+  `user-select: none` by selector (a code block's language rail) or it is inert
+  only by inheriting the shell's default (a tool row's section head, a compact
+  thinking row). A selection with no formula in it is written by the platform
+  unchanged; a selection that holds one reaches the clipboard as its source
+  however deep inside it the copy was raised, so a range anchored on a turn —
+  what Select text produces — copies as TeX even though Chromium raises the
+  event on a paragraph within it. Right-click Copy and Ctrl/Cmd+C produce the
+  same string for one selection, and a right-click on a turn that does not own
+  the selection reads no excerpt from it, so Copy falls back to that turn's own
+  source. A pasted formula renders as
+  the one it came from — same TeX, and display math still display math —
+  `\[ … \]` included: it is painted inside its sentence's paragraph, and copies
+  with `$$` on a line of its own, which is enough to open a display block when
+  it is pasted back. `\( … \)` stays
+  inline. A table cell reaches it too, measured rather than assumed: the
+  `.katex-display` box breaks the row for the platform's own reading as well,
+  so no tab lands beside the fence and the formula copies as display math with
+  the neighbouring cell intact on its own line. A backward selection is still
+  backward after the copy. The copy
+  writes `text/plain` only — no `text/html` flavour is put on the clipboard.
+- **Specs linked**: `04-ux/08-component-spec.md` §8.7, ADR 0268,
+  decisions-log D619, issue #414
+- **Acceptance**: C (chat stream), Quality
+- **Milestone**: M5
+- **Status**: Automated (`pnpm test:e2e:copy-tex`, real Chromium) plus
+  `selection-tex.test.mjs`
+
 #### E2E-060b: Neutral gray accent across chrome
 
 - **Preconditions**: App running in dark and light themes; plugins page and a
@@ -7500,7 +7595,13 @@ identify the platform validation still needed.
   be entered. Press Test connection and confirm the result resolves the edited
   account. Open the Composer model menu and confirm the edited account label is
   used as the OAuth provider group heading, while the configured model alias is
-  shown on its model row. 5) Resolve
+  shown on its model row. With both Anthropic accounts configured, open the
+  Defaults picker and confirm the one provider name each group shows is that
+  account's own label, so the two accounts are not two identical `Anthropic`
+  groups, that the summary line above the Change action names the account
+  holding the current default, and that typing an account label filters to that
+  account's models while typing the vendor name still reaches both. Repeat the
+  same check on the Settings prompt-enhancement model picker. 5) Resolve
   and use each account separately, including model discovery and one streamed
   turn per account. 6) Start the device-code login on a second vendor, including
   Meta/Muse when available, then press Cancel while the dialog is polling;
@@ -8150,7 +8251,7 @@ identify the platform validation still needed.
 | Post-MVP | E2E-022A, E2E-022B, E2E-022C, E2E-024I, E2E-024J, E2E-024K, E2E-024L, E2E-024M (plugin roadmap R2/R3/R6) |
 | Post-baseline local automation | E2E-220 |
 | Post-MVP remote control | E2E-221, E2E-222, E2E-223, E2E-224, E2E-225, E2E-226, E2E-227, E2E-228, E2E-229, E2E-230, E2E-231, E2E-232 |
-| Trusted extensions (R7 v1) | E2E-DIALOG-long-text-boundaries, E2E-241, E2E-242, E2E-TRUSTED-EXTENSION-custom-agent-stream-and-binding, E2E-243, E2E-244, E2E-245, E2E-PLUGIN-imported-pi-package-skills, E2E-PLUGIN-import-extension-installs-dependencies, E2E-PLUGIN-import-extension-reports-missing-dependency, E2E-PLUGIN-declared-provider-appears-in-the-native-provider-list |
+| Trusted extensions (R7 v1) | E2E-DIALOG-long-text-boundaries, E2E-241, E2E-242, E2E-HOOKS-cancel-and-dispose, E2E-TRUSTED-EXTENSION-custom-agent-stream-and-binding, E2E-243, E2E-244, E2E-245, E2E-PLUGIN-imported-pi-package-skills, E2E-PLUGIN-import-extension-installs-dependencies, E2E-PLUGIN-import-extension-reports-missing-dependency, E2E-PLUGIN-declared-provider-appears-in-the-native-provider-list |
 | Trusted extensions (R7 v1 npm recovery) | E2E-PLUGIN-import-extension-recovers-missing-npm |
 | Post-MVP regression coverage (plugin tool dispatch) | E2E-PLUGIN-slow-tool-is-not-cut-off-by-host-dispatch |
 | M6+ (Project delete) | E2E-PROJECT-delete-removes-project-and-owned-sessions |
@@ -8178,6 +8279,8 @@ identify the platform validation still needed.
 | F — Persistence (stored model binding array) | E2E-PROVIDER-stored-binding-array-reads-entry-by-entry |
 | Quality (stored model binding array) | E2E-PROVIDER-stored-binding-array-reads-entry-by-entry |
 | Quality (unique tool-call ids) | E2E-RUNTIME-unique-tool-call-ids-per-request |
+| C — Conversation & stream (loop context ownership) | E2E-RUNTIME-loop-context-ownership |
+| Quality (loop context ownership) | E2E-RUNTIME-loop-context-ownership |
 | G — Plugin host lifecycle (crash report) | E2E-PLUGIN-crash-report-names-the-exit-code |
 | Quality (crash report) | E2E-PLUGIN-crash-report-names-the-exit-code |
 
@@ -10772,6 +10875,14 @@ are withdrawn with ADR 0165.
   sharing a vendor alias; the wiring test checks unique on-demand matching. The settings checkbox
   UI/persistence journey and live external provider execution remain manual;
   this fixture does not claim a complete native UI journey.
+
+- **Authorization regression coverage (#841)**: `pnpm test:e2e:subagent-models`
+  grants a model on demand, reuses the runtime, then revokes it without changing
+  the launch catalog. The next prompt must reauthorize and issue no child request.
+  A transcript-restored resume with a colliding model id must use the session
+  binding rather than another definition's private account. Runtime tests also
+  cover own pins/fallbacks, opted-in bindings, visible fallback metadata, live-key
+  reauthorization, and late RPC responses crossing parent turns.
 
 #### E2E-170: Shell titlebars use borderless chrome
 
@@ -14504,8 +14615,35 @@ the latest destination. These assertions measure work counts, not device FPS.
 - **Automation:** `packages/agent-runtime/src/runtime.test.ts` covers both halves
   against a real runtime built from a duplicated history (drop + one log line)
   and a unique one (identity, no log line).
+
 - **Status:** Unit-covered; no end-to-end driver issues a real provider request
   against a duplicated transcript.
+
+### E2E-RUNTIME-loop-context-ownership
+
+- **Preconditions:** A deterministic provider fixture that answers the first two
+  rounds with one tool call each and stops the turn after the second round the
+  way a user Stop does. No real provider credentials.
+- **Steps:** Send one prompt so the runtime runs both tool rounds and ends the
+  turn on a tool round. Send a second prompt. Read the state the runtime kept and
+  the outgoing request the fixture received.
+- **Expected:** The kept state holds each streamed assistant message and each tool
+  result exactly once; no result is separated from the call it answers; the
+  fixture's request carries exactly one result per call. No duplicate-drop line is
+  logged, because the request guard had nothing to drop.
+- **Specs:** `03-runtime/02-agent-runtime.md` §5c,
+  `08-meta/decisions-log.md` D620.
+- **Acceptance:** C (conversation and stream), Quality.
+- **Milestone:** Post-MVP regression coverage.
+- **Automation:** `packages/agent-runtime/src/runtime.test.ts` (loop context
+  ownership) drives the real pi loop through `runtime.prompt()` and reads the
+  view `convertToLlm` handed the provider; `subagent-loop-context.test.ts` covers
+  the delegate's turn boundary. The adapter's own output is out of reach of both,
+  so `tool-call-dedupe.test.ts` (request wire contract) drives pi-ai's message
+  transform directly to pin the two outputs one call id receives when a request
+  separates a call from its result.
+- **Status:** Unit-covered; no end-to-end driver issues a real provider request
+  from a context the loop appended to.
 
 ### E2E-MCP-HTTP-ACK — HTTP acknowledgement and authorization status
 
@@ -14667,6 +14805,31 @@ artifact identity and independent review in
 `docs/project/hosted-search-contract-verification.md`. Never record private
 conversation content or credentials. A skipped test remains NOT RUN, not PASS.
 
+### E2E-HOOKS-cancel-and-dispose
+
+- **Issue #816 extension:** Cancel a command while its prompt is visible and
+  verify the real renderer removes the dialog, no later prompts or exec occur,
+  and the next command/turn succeeds. The trusted-extension Electron driver
+  checks the DOM via CDP. Runner tests cover long commands, stopped context waits,
+  tool cancellation and late updates, detached header payloads and recovery;
+  process tests use a real parent/child tree with readiness synchronization.
+
+- **Preconditions:** An isolated Desktop profile, deterministic local provider,
+  and a trusted plugin with a waiting preflight handler.
+- **Steps:** Start a prompt; stop while the handler waits; release the old
+  handler; send another prompt. Repeat with runtime disposal. Load another
+  fixture with stalled startup/shutdown handlers and a deferred event.
+- **Expected:** No provider request starts for the stopped/disposed prompt;
+  the next prompt completes. Late results cannot restart work. Shutdown runs
+  once, waits time out per handler, and deferred registrations are diagnosed
+  without disabling supported handlers.
+- **Specs:** 07-plugins/16 §6.
+- **Acceptance:** Responsive cancellation and bounded extension lifecycle waits.
+- **Milestone:** Hooks P0.
+- **Status:** Runner and real Runtime/local-HTTP integration automated in
+  `extensions/runner.test.ts` and `extensions/runtime-lifecycle.test.ts`.
+  The trusted-extension Electron driver exercises the Stop path through the
+  real renderer via CDP and records the visible and retired dialog states.
 ## Composer command source, manual compaction, and empty transcript reads (#795)
 
 **Scope:** the composer's slash dispatch, the manual compaction RPC, and the

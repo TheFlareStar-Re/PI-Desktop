@@ -304,6 +304,7 @@ Gold source: local Codex electron captures; latest row wins where rows conflict.
 | D365 | Named quiet intervals on the live activity row | **Amend D338 / ADR 0175: `AgentActivity` adds `preparing`, `compacting`, and `recovering`; `starting` shows its own label; `waiting-subagents` carries a live running snapshot (`name`, `lastPhase`, `lastToolName`) that updates on child tool/thinking changes, not on every token. The row stays one compact inline status and does not restore an activity-group capsule.** | Compaction, silent-turn recovery, the post-tool gap, and startup all looked like a stuck generic wait, and a parent wait hid what its delegates were doing (ADR 0198, E2E-008c / E2E-094) |
 | D599 | A development build is its own installation | **Narrow D236 / amend ADR 0094: a development build (unpackaged, or `PI_DESKTOP_DEV=1`) takes `PI-Desktop Dev` as its Electron `userData` — and with it the single-instance lock, renderer `localStorage`, the plugin panel partitions, and browser pane cookies — and reads `~/.pi-desktop-dev`. An explicit `--user-data-dir` still wins, which is how the E2E harnesses point a build at a throwaway profile. A packaged installation keeps `PI-Desktop` and `~/.pi-desktop`, so no existing profile is relocated. `PI_DESKTOP_DATA_DIR` still overrides either profile and is made absolute before it reaches host-core as a child-process environment variable; Electron main publishes the resolved directory back to that variable so the plugin runtime reads one root. No IPC, protocol, schema, or packaged-installation path change. See `03-runtime/07-process-model.md` and E2E-150.** | A packaged app that was already running held the lock, so `pnpm dev` quit on arrival; a development host that won the race instead put a second host-core over the same single-writer `pi.sqlite`, the outbox, and the log tree. |
 | D602 | Crash dumps stay in the data directory | **Electron's Crashpad reporter starts local-only (`uploadToServer: false`) before `ready`. Dumps live under `<data_dir>/crash-dumps`, not the default Electron `userData` crashDumps path, so a `PI_DESKTOP_DATA_DIR` profile does not share dumps. The next lock-holding launch writes one `diagnostics` line for dumps newer than `crash-dumps.json`, classified by Crashpad `ptype`: `error` if any new dump is the browser/main process, `warn` for recovered renderer/GPU/utility crashes. Host-core and sidecar crashes stay on the supervisor path. No upload, no IPC, no schema change.** | A crash left a minidump nobody read. Crashpad also records recovered renderer crashes, so a next-launch `error` that said the previous run died was a lie; and dumps outside the data directory escaped `PI_DESKTOP_DATA_DIR` isolation. |
+| D619 | A copied formula is its TeX source | **Renderer only: a copy whose selection covers rendered math writes `text/plain` from the MathML `annotation` — `$…$` inline, `$$…$$` on its own lines, the delimiters `lib/latex-math.ts` normalizes `\(…\)` and `\[…\]` to, each run widened past any run inside the formula as a code span's fence is — instead of the two trees KaTeX paints. A cut that lands inside a formula grows to the whole formula. Only the formulas are rewritten: the reduced clone is read back through `Selection.toString()`, the serializer a copy itself runs, so prose, lists, tables and code blocks sharing the selection keep the platform's own reading — `user-select: none` chrome left behind included, which `innerText` would have written out. A selection with no formula in it, and a copy raised where the selection does not live, are left to the platform entirely. One flavour is written, `text/plain`: taking the event over drops the platform's `text/html` too and none is written back, because the reduced clone is app markup that would carry the `user-select: none` chrome the text reading drops, and because carrying the rendering instead would paste every formula twice — KaTeX's stylesheet is the only thing hiding the MathML tree and no stylesheet travels on the clipboard. One document `copy` listener owned by the shell, and the transcript's right-click Copy reads the same selection through the same module.** | A formula pasted as its glyphs, once per rendered tree, so it could not be carried into a LaTeX document or another Markdown editor (issue #414). ADR 0268 removed quoting on the grounds that the OS clipboard was the substitute; the clipboard had to actually carry the source. |
 
 
 ## M0. Model catalog decisions
@@ -6610,6 +6611,53 @@ that was sitting at the bottom — including after the turn had finished.
   `apps/desktop/test/image-generation-default.test.mjs`, with
   `provider-model-config.test.mjs` asserting the add branch consults them.
 
+## 2026-09-22 — The loop owns its context array (D620)
+
+- A turn whose later iterations ran tools left `state.messages` holding two copies
+  of every message those iterations appended, and the next turn's first request
+  was assembled from that array. The duplicate of an assistant message that
+  carried text plus a tool call survived the request guard (D608) as a text-only
+  clone sitting between the call and the result answering it; pi-ai then closed
+  the still-pending call with a synthesized "No result provided" output next to
+  the real one, so one call id carried two outputs and the endpoint rejected the
+  whole turn with `Duplicate tool output for call_id` (HTTP 400, not retriable).
+  The array is reused, so every following turn failed the same way and `继续`
+  could not recover the session.
+- pi-ai's loop appends each streamed assistant message and each tool result to
+  the context it was handed, while its own `message_end` listener appends the
+  same message object to `state.messages`. `rebuiltAgentContext()` returned that
+  live array, so both appends landed in one array; it now returns a copy, exactly
+  like pi's own `createContextSnapshot()` does for `prompt()` and `continue()`.
+  The delegate's turn boundary handed over the same live array
+  (`subagent.ts` `prepareNextTurn`) and now copies too. The loop's view and
+  `state.messages` carry the same messages in the same order at each message
+  boundary, they are simply no longer the same array — which is what keeps the
+  duplicates out of the next request.
+- The request guard at `convertToLlm` (D608) now matches what the provider
+  validates: call and result ids are compared by their wire-visible part, a
+  result whose item half disagrees with its call is paired to the call's id, and
+  an assistant message whose tool calls were all already claimed is dropped whole
+  instead of being kept as the clone that separates a call from its result. The
+  drop log line also states how many messages were removed. A message that
+  replays one claimed call while carrying a new one is left in place with its new
+  call, the only id sharing the guard accepts; no writer reaches that shape.
+- No provider transport, host protocol, version, storage migration, transcript
+  rewrite, or compaction/retention/budget rule changes.
+  `03-runtime/02-agent-runtime.md` §5c and
+  E2E-RUNTIME-loop-context-ownership record the contract and its coverage.
+## 2026-09-21 — Bound Desktop trusted-extension lifecycle waits
+
+- Apply the existing 30-second handler budget to notification, startup and
+  shutdown handlers as well as result handlers; module loading and factory
+  initialization each use the same budget. This changes previously unbounded
+  waits, including event handlers waiting for a UI answer.
+- Abort retires current waits; disposal rejects new dispatches and runs shutdown
+  once. Late settlements cannot supply results to the retired dispatch. Existing
+  fail-open error handling, result folding, plugin ownership and permissions
+  remain unchanged. In-process code is not forcibly terminated.
+- Deferred events remain registrable and now appear in existing diagnostics.
+  See `07-plugins/16-trusted-extensions.md` §6 and
+  `E2E-HOOKS-cancel-and-dispose`.
 ## 2026-09-22 — An unreadable command source refuses a slash submission (D613, issue #795)
 
 - Composer send-time resolution read the merged command list and swallowed a
@@ -6716,6 +6764,145 @@ that was sitting at the bottom — including after the turn had finished.
   empty range, or one past that request bound, still falls back on budget
   grounds. See ADR 0302, `03-runtime/02-agent-runtime.md`, ADR 0049, ADR 0282.
 
+## 2026-09-20 — A copied formula is its TeX source (D619, issue #414)
+
+Math boundaries remain parseable after copying: touching inline fences get
+one separator, and every prose dollar in the copied text is escaped, together
+with backslash runs that would otherwise escape a fence.
+Annotation whitespace is preserved; widened multiline inline math uses a
+literal `<span>` wrapper to prevent a flow opener when pasted at column zero.
+TeX newlines are not flattened because they can terminate `%` comments.
+The wrapper is Markdown source in `text/plain`, not a `text/html` payload;
+compatibility with external editors that disallow inline HTML is not promised.
+Regression coverage checks both copy entry points and Markdown round trips
+for adjacent formulas, prose dollars on either side, formatting wrappers,
+line/block boundaries, padding, and multiline math including TeX comments.
+Display math containing `- x`, `+ x`, `* x`, `> x`, or internal blank lines
+must remain a single math node after copying. The shared remark grammar
+keeps unclosed math in the streaming tail until its fence closes; subsequent
+prose and its source offsets remain intact. A footnote whose definition
+follows its reference — adjacently or streamed in later — renders as a real
+reference and note section rather than a literal `[^1]`, which is what block
+splitting costs when a slice is parsed without the rest of the message.
+CRLF, ordinary lists, quotes, GFM tables, fenced code and the sources that
+must keep splitting are covered by `markdown-blocks.test.mjs`.
+
+
+- KaTeX paints one formula twice — a MathML tree for assistive technology and a
+  visual tree of positioned spans — and both are real text in the document. The
+  platform's own copy therefore wrote a formula out as its glyphs, twice over,
+  and never as the source the answer was written in.
+- A copy whose selection covers rendered math now reads the TeX back out of the
+  MathML `annotation`: `$…$` inline, `$$…$$` on its own lines. Those are the
+  delimiters `lib/latex-math.ts` normalizes `\(…\)` and `\[…\]` to before
+  `remark-math` runs, so a pasted formula renders as the one it came from. A cut
+  that lands inside a formula grows to the whole formula, because half a TeX
+  expression is not one and a cut between the two trees would take the source
+  from one and the glyphs from the other.
+- Each delimiter run is widened past any run inside the formula, the way a code
+  span's fence is, because `$\$5 + x$` closes at the escaped dollar and pastes
+  back as prose. Inline stays the narrow run otherwise, and not for the reason
+  it first looks like: a single-line `$$…$$` never opens a display block, since
+  math flow forbids `$` in the meta after its opening fence. It stays narrow
+  because an inline formula's TeX can carry a newline — only the `\(…\)` path
+  has its newlines flattened by the normalization — and a `$$` run would then
+  land at the start of a line with the rest of the formula behind it, which is a
+  flow opening and swallows the paragraph.
+- Display math is not always a block here. `normalizeLatexMathDelimiters`
+  rewrites `\[ … \]` in place — the rewrite is length-preserving — so the math
+  node stays inline and `remarkLatexBracketDisplay` promotes it, leaving KaTeX
+  to paint `.katex-display` inside the sentence's own paragraph. The reduction
+  puts its paragraph slot there unchanged; a `p` nested in a `p` is invalid as
+  markup and harmless here, because the clone is only ever read through the
+  text serializer, which treats the nested block as one boundary. One newline
+  above `$$` is enough for `remark-math` to open the display block, so the
+  formula pastes back as the display formula it came from. Both `\[ … \]`
+  shapes are pinned by E2E-CHAT-copy-formula-as-tex.
+- A table cell is the one place the block slot had to be measured rather than
+  reasoned about, and the measurement is recorded because the reasoning points
+  the wrong way. `remarkLatexBracketDisplay` promotes a `\[ … \]` node wherever
+  it sits, cells included, so `.katex-display` really does land inside a `<td>`
+  — and the table serializer joins cells with tabs, which makes it look as
+  though the `$$` fence there would be closed by a tab and swallow the rest of
+  the row (`a\tb\n$$\nE = mc^2\n$$\t2` is one math node whose value runs to
+  the end of the line). Chromium writes no such string: a block box is a block
+  boundary inside a cell too, so the row breaks around it, the fence closes on
+  its own line, and the neighbouring cell arrives on one of its own. The slot
+  is not inventing that boundary either — the platform's own reading of the
+  same row has no tab in it, because `.katex-display` breaks the row for it as
+  well — so keeping the display form here is the parity the rest of this
+  decision rests on rather than an exception to it. Narrowing to the inline run
+  in a cell was considered and rejected: it would pay display math to repair a
+  shape the serializer does not produce, and it would put a tab back that the
+  platform itself does not write. E2E-CHAT-copy-formula-as-tex asserts both
+  halves, so a Chromium that started tab-joining a cell holding a block would
+  fail there rather than in a user's clipboard.
+- Only the formulas are rewritten. Everything else in the selection — prose,
+  lists, tables, code blocks — is serialized by the platform itself: the
+  reduced clone is selected and read back through `Selection.toString()`, the
+  serializer a copy actually runs. A hand-written walk of the tree could only
+  approximate those whitespace rules, and everywhere it fell short it would
+  silently rewrite content the platform already got right: source line wrapping
+  put back into a paragraph, blank lines between list items, a code block's own
+  blank lines collapsed.
+- The serializer has to be the copy's own, not a near neighbour. `innerText`
+  reads almost identically and has no notion of `user-select`, so it writes out
+  the chrome `base.css` marks inert — a code block's language rail reaching the
+  clipboard as a stray `js` line. Restating that rule inside the reduction
+  would be the hand-written walk this decision rejects; running the platform's
+  own serializer makes the parity exact instead of approximate. The clone is
+  read inside the element the selection came from rather than parked on `body`,
+  so the cascade deciding that reading is the live one; restating the selection
+  contract on the clone instead (an inline `user-select: text`) inverts it,
+  because the shell is unselectable by default and document-like surfaces opt
+  back in — chrome that is inert only by inheritance would arrive in the
+  clipboard.
+- Every other selection is left alone: a selection with no formula in it is the
+  platform's business. There is no second test of whether the copy "belongs to"
+  the selection, because Chromium derives the event target from the selection
+  itself, so a non-collapsed selection always raises its copy inside itself;
+  a target check only rejects ranges built with `selectNodeContents`, the
+  transcript's own Select text among them. A copy raised in the composer cannot
+  carry a stale transcript selection either — a frame holds one selection, so
+  focusing a field collapses it, and a collapsed selection is already declined.
+- One clipboard flavour, `text/plain`. Taking the copy over drops the
+  platform's `text/html` as well, and none is written back. The reduced clone
+  is the app's own markup: serializing it would carry the chrome `base.css`
+  marks `user-select: none` — a code block's `js` rail and its copy button —
+  that the text reading drops, plus `data-source-*` bookkeeping and a display
+  slot nested in a paragraph, which is a second and worse reading of one
+  selection. Writing the rendering back instead is not an option either:
+  KaTeX's stylesheet is the only thing that hides the MathML tree, and no
+  stylesheet travels on the clipboard, so a rich paste target would show every
+  formula twice — the very duplication this decision removes. Leaving the
+  flavour out settles both: a rich paste target falls back to the plain text,
+  which is the source. The cost is that a selection holding a formula pastes
+  into a rich target without the tag-level formatting the platform's own
+  `text/html` would have carried; the source is what the copy is for.
+- One document `copy` listener, installed and removed by the shell
+  (`hooks/use-copy-tex.ts`), because `Markdown` renders no wrapper of its own —
+  answers, a work-panel file preview and a plugin readme reach the same
+  formulas through different parents — and because a copy is a document
+  gesture. The transcript's right-click Copy reads the same selection through
+  the same module, so the two entry points cannot put two readings of one
+  selection on the clipboard.
+- Splitting a message into independently parsed blocks, which predates D619 and
+  which D619 moved onto the rendering grammar, is only sound for a slice that
+  needs no other slice's parse context. A link or footnote definition is
+  exactly the counterexample: it resolves across the whole message, and a
+  footnote also numbers, reuses and back-links across it, so a reference parsed
+  without its definition survives as the literal `[^1]` and the note is
+  dropped. A message declaring a definition anywhere therefore renders
+  undivided. Injecting definitions into every slice was rejected: it renumbers
+  footnotes per slice and aims the back-links at the wrong reference. The
+  accepted cost is that such a message loses per-block memoization while it
+  streams, which is the cost the renderer carried before it split blocks at all
+  and which its rarity in chat answers keeps bounded.
+- D619 adds no surface, no store state, and no action-row item: it is the OS
+  clipboard that ADR 0268 already rested the removal of quotes on, made honest.
+  Renderer only — no IPC channel, host protocol, storage schema, permission,
+  Plugin SDK, or i18n key changed. See `04-ux/08-component-spec.md` §8.7 and
+  E2E-CHAT-copy-formula-as-tex.
 ## 2026-09-22 — pi's file-op collector is fed the names it reads (D618, issue #827)
 
 - A checkpoint's `readFiles` / `modifiedFiles`, and the `<read-files>` section a

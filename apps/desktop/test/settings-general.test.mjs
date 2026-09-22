@@ -258,7 +258,12 @@ test("default model selector shows every configured model under its provider", (
   assert.match(defaultModelPicker, /setDefaultModel\(provider, modelId\)/);
   assert.match(providersSource, /settings-text-action model-default-trigger/);
   assert.doesNotMatch(providersSource, /defaultModelDescription/);
-  assert.match(providersSource, /aria-label=\{`\$\{provider\.name\} · \$\{modelId\}`\}/);
+  // The accessible name follows the provider heading, which is the vendor
+  // account's own label when it has one (#785).
+  assert.match(
+    providersSource,
+    /aria-label=\{`\$\{providerDisplayName\(provider\)\} · \$\{modelId\}`\}/,
+  );
   assert.match(providersSource, /placeholder=\{t\("settings\.defaultModelSearch"\)\}/);
   assert.match(providersSource, /model-default-results/);
   assert.match(stylesSource, /\.model-default-results\s*\{[\s\S]*?overflow-y: auto;/);

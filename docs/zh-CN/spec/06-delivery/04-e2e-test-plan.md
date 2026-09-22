@@ -2278,6 +2278,33 @@ MainChat 弥补了缺口。 Maximized/fullscreen 调用保留最新的
 - **完整历史回归**：打开包含 140 条消息的会话，不向上翻页，选择复制整个对话；剪贴板必须包含第 1–140 条消息。从搜索上下文窗口和长消息截断预览重复验证。保留当前可见的生成中文字；读取失败时提示错误，剪贴板保持不变。仅在选择复制后读取完整历史，不改变阅读位置。运行 `node scripts/e2e-copy-conversation.mjs`。
 - 编辑时复制应使用草稿选区，无选区时复制整份草稿；选中消息文本应选中草稿。菜单不提供编辑、删除或版本切换；取消后原消息及其菜单保持不变。自动化验证：`node scripts/e2e-message-edit-copy.mjs`。
 
+#### E2E-CHAT-copy-formula-as-tex：复制渲染后的公式得到源码
+
+复制之后公式的边界仍然可解析：相邻的行内围栏之间补一个分隔符；正文里的每个美元
+符号都会被转义，本会把围栏转义掉的反斜杠串同理。annotation 里的空白原样保留；
+加宽过的多行行内公式用一个字面的 `<span>` 包住，以免它粘在行首时开出块级公式。
+TeX 里的换行不做压平，因为它可能用来终止 `%` 注释。这个包裹是 `text/plain` 里的
+Markdown 源码，不是 `text/html` 负载；对禁用行内 HTML 的外部编辑器不作兼容承诺。
+回归覆盖两个复制入口，以及相邻公式、围栏两侧的正文美元符号、格式化包装、行与块
+的边界、补白，以及含 TeX 注释的多行公式各自的 Markdown 往返。
+含 `- x`、`+ x`、`* x`、`> x` 或内部空行的块级公式，复制之后必须仍是同一个公式
+节点。共享的 remark 语法把尚未闭合的公式留在流式尾块里直到围栏闭合，其后的正文
+及其源码偏移保持不变。脚注定义出现在引用之后——紧随其后，或稍后才流式到达——会
+渲染成真正的引用与脚注区，而不是字面的 `[^1]`；这正是把切片脱离整条消息单独解析
+时，按块切分要付的代价。CRLF、普通列表、引用块、GFM 表格、围栏代码，以及那些
+必须继续切分的源文，由 `markdown-blocks.test.mjs` 覆盖。
+
+
+- **前提条件**：助手回答里既有句中的行内公式，也有独占若干行的块级公式，还有句中的 `\[ … \]` 公式与独占若干行的 `\[ … \]` 公式、一个 `\( … \)` 公式、一个含字面 `$` 的公式、一个值里带换行的行内公式与另一个值的两端各带一个换行的行内公式，以及一段不含公式的正文；另有与公式同处一个选区的：源码跨多行折行的段落、无序列表、表格、一个单元格里放着 `\[ … \]` 公式的表格、内含空行的围栏代码块，以及一个正文被 chrome 打断的回合，该 chrome 仅因继承外壳的 `user-select: none` 而不可选（工具行的分节标题）。
+- **步骤**：1）选中含行内公式的整句并按 Ctrl/Cmd+C。2）选中块级公式并复制。3）从公式中间选到该句末尾并复制。4）把一段正文、一个公式和另一段正文一起选中并复制。5）选中不含公式的正文并复制。6）分别复制折行段落、列表、两个表格和代码块。7）分别复制两个 `\[ … \]` 公式、那个 `\( … \)` 公式、含字面 `$` 的公式，以及值里带换行的那两个公式。8）从句末反向选到句首选中一个公式并复制。9）在公式处于选中状态时右键该回合并选择复制，再右键另一个回合并选择复制。10）按「选中文本」菜单项的方式选中整个回合的内容——选区锚在回合上，而复制事件落在回合内部的某个段落上——并复制。11）选中一个始终不越出该公式的范围——在它的渲染内部拖选——并复制。12）把每次结果重新交给同一个回答渲染器渲染一遍——即粘回输入框并发送后得到的东西——再把它画出的公式与选区覆盖的公式逐一比对。
+- **预期**：每个公式都以它被写下时的 TeX 进入剪贴板——行内 `$…$`，块级 `$$…$$` 独占行——而不是 KaTeX 画出的字形，也不是两棵树带来的同一个表达式的两份。含字面 `$` 的公式会像代码段的围栏那样把定界符加长到盖过它，粘回去仍是公式而不是普通文字；值里带换行的行内公式则保持窄形式，因为 `$$` 落在行首会开出块级公式并吞掉整段；值的两端各带一个换行的那个，复制时会自己补上一对空白，因为语法在这里吃掉一个换行就像吃掉一个空格。从公式中间开始的选区会复制整个公式，而始终不越出某个公式的选区只复制出该公式本身。选区里其余内容与平台原本复制到的逐字节一致：折行段落仍是一整行，列表每项一行，表格单元格之间是制表符、每行一行并保留平台为末行补上的换行，代码块保留自己的空行。复制本就会略过的 chrome 不会进入剪贴板：无论 `base.css` 是按选择器把它标为 `user-select: none`（代码块的语言标签），还是它仅因继承外壳默认值而不可选（工具行的分节标题、紧凑思考行）。不含公式的选区交回平台原样写入；含公式的选区则无论复制事件落在它内部多深的位置，都以源码进入剪贴板——所以锚在整个回合上的选区（即「选中文本」产生的那种）也会复制成 TeX，哪怕 Chromium 把事件抬在了回合内部的某个段落上。右键复制与 Ctrl/Cmd+C 对同一个选区得到同一个字符串，而右键一个并不持有该选区的回合读不到任何摘录，因此复制退回该回合自己的源码。粘回的公式渲染回它来处的那个公式——TeX 相同，块级仍是块级——`\[ … \]` 也不例外：它被画在所属句子的段落里，复制出来时 `$$` 独占一行，足以在粘回去时开出块级公式；`\( … \)` 保持行内。表格单元格同样适用，且这一条是实测而非推断：`.katex-display` 盒子对平台自己的读法同样会断开该行，因此围栏旁边不会出现制表符，公式仍以块级形式复制，相邻单元格完整地落在自己的行上。反向选区在复制之后仍然是反向的。复制只写 `text/plain`——不会把 `text/html` flavour 放上剪贴板。
+- **链接规格**：`04-ux/08-component-spec.md` §8.7，ADR 0268，
+  决策日志 D619，issue #414
+- **验收**：C（聊天流），质量
+- **里程碑**：M5
+- **状态**：已自动化（`pnpm test:e2e:copy-tex`，真实 Chromium），另有
+  `selection-tex.test.mjs`
+
 #### E2E-060b：镀铬中性灰色调
 
 - **先决条件**：应用程序在深色和浅色主题中运行；插件页面和
@@ -5321,7 +5348,7 @@ eleven-tool-round desktop paths are verified by
 | 后MVP | E2E-022A、E2E-022B、E2E-022C、E2E-024I、E2E-024J、E2E-024K、E2E-024L、E2E-024M（插件路线图 R2/R3/R6） |
 | 基线后本地自动化 | E2E-220 |
 | MVP 后远程控制 | E2E-221、E2E-222、E2E-223、E2E-224、E2E-225、E2E-226、E2E-227、E2E-228、E2E-229、E2E-230、E2E-231、E2E-232 |
-| 受信任扩展（R7 v1） | E2E-DIALOG-long-text-boundaries、E2E-241、E2E-242、E2E-243、E2E-244、E2E-245、E2E-PLUGIN-imported-pi-package-skills、E2E-PLUGIN-import-extension-installs-dependencies、E2E-PLUGIN-import-extension-reports-missing-dependency、E2E-PLUGIN-declared-provider-appears-in-the-native-provider-list |
+| 受信任扩展（R7 v1） | E2E-DIALOG-long-text-boundaries、E2E-241、E2E-242、E2E-HOOKS-cancel-and-dispose、E2E-243、E2E-244、E2E-245、E2E-PLUGIN-imported-pi-package-skills、E2E-PLUGIN-import-extension-installs-dependencies、E2E-PLUGIN-import-extension-reports-missing-dependency、E2E-PLUGIN-declared-provider-appears-in-the-native-provider-list |
 | 受信任扩展（R7 v1 npm 恢复） | E2E-PLUGIN-import-extension-recovers-missing-npm |
 | Post-MVP 回归覆盖（插件工具调度） | E2E-PLUGIN-slow-tool-is-not-cut-off-by-host-dispatch |
 | M6+（删除项目） | E2E-PROJECT-delete-removes-project-and-owned-sessions |
@@ -5347,6 +5374,8 @@ eleven-tool-round desktop paths are verified by
 | C / F / 品质 —— 上下文估算保持安全（校准） | E2E-CONTEXT-estimate-calibration-stays-safe |
 | C — 对话与流式（工具调用 id 唯一） | E2E-RUNTIME-unique-tool-call-ids-per-request |
 | 品质（工具调用 id 唯一） | E2E-RUNTIME-unique-tool-call-ids-per-request |
+| C — 对话与流式（循环上下文归属） | E2E-RUNTIME-loop-context-ownership |
+| 品质（循环上下文归属） | E2E-RUNTIME-loop-context-ownership |
 | G — 插件宿主生命周期（崩溃上报） | E2E-PLUGIN-crash-report-names-the-exit-code |
 | 品质（崩溃上报） | E2E-PLUGIN-crash-report-names-the-exit-code |
 | F — 持久化（存储的模型绑定数组） | E2E-PROVIDER-stored-binding-array-reads-entry-by-entry |
@@ -6630,6 +6659,14 @@ eleven-tool-round desktop paths are verified by
   优先级、按需授权且不重建运行时、会话继承与跨回合撤销。运行时单测覆盖选择校验，桌面启动测试
   验证独立许可、撤销和多账号别名冲突，连接测试检查按需唯一匹配。设置复选框 UI/持久化旅程及外部真实提供商执行仍需手动验证；
   此夹具不代表完整原生 UI 旅程已通过。
+
+- **Authorization regression coverage (#841)**: `pnpm test:e2e:subagent-models`
+  grants a model on demand, reuses the runtime, then revokes it without changing
+  the launch catalog. The next prompt must reauthorize and issue no child request.
+  A transcript-restored resume with a colliding model id must use the session
+  binding rather than another definition's private account. Runtime tests also
+  cover own pins/fallbacks, opted-in bindings, visible fallback metadata, live-key
+  reauthorization, and late RPC responses crossing parent turns.
 
 #### E2E-167：原生边缘调整大小保持流畅并保存稳定边界
 
@@ -8467,7 +8504,22 @@ the latest destination. These assertions measure work counts, not device FPS.
   **里程碑：** Post-MVP 回归覆盖。
 - **自动化：** `packages/agent-runtime/src/runtime.test.ts` 用真实的运行时覆盖两半：重复历史（丢弃 + 一行日志）与唯一历史
   （同一对象、无日志）。
+
 - **状态：** 单元测试覆盖；没有端到端驱动对重复转录发出真实提供商请求。
+
+### E2E-RUNTIME-loop-context-ownership
+
+- **先决条件：** 一个确定性提供商夹具：前两轮各回一次工具调用，并在第二轮之后像用户 Stop 那样结束回合；不使用真实凭据。
+- **步骤：** 发一条提示，让运行时跑完两轮工具调用并在工具轮上结束回合；再发第二条提示。读取运行时保留的状态与夹具收到的出站请求。
+- **预期：** 保留的状态里每个流式辅助消息与每个工具结果都只有一份；没有结果与它回答的调用被隔开；夹具收到的请求对每次调用只带一个结果。
+  不产生去重日志行，因为请求守卫没有任何东西需要丢弃。
+- **规格：** 03-runtime/02-agent-runtime §5c、08-meta/decisions-log D620。**验收：** C（对话与流）、品质。
+  **里程碑：** Post-MVP 回归覆盖。
+- **自动化：** `packages/agent-runtime/src/runtime.test.ts`（loop context ownership）通过 `runtime.prompt()` 驱动真实 pi 循环，
+  并读取 `convertToLlm` 交给提供商的视图；`subagent-loop-context.test.ts` 覆盖委托侧的回合边界。两者都到不了适配器自身的输出，
+  因此由 `tool-call-dedupe.test.ts`（request wire contract）直接驱动 pi-ai 的消息变换，固定「请求把调用与结果隔开时同一个 call id
+  会拿到两条输出」这一机制。
+- **状态：** 单元测试覆盖；没有端到端驱动从「循环追加过的上下文」构建新回合的请求。
 
 ### E2E-MCP-HTTP-ACK — HTTP acknowledgement and authorization status
 
@@ -8678,6 +8730,24 @@ the latest destination. These assertions measure work counts, not device FPS.
 **证据：** 记录构建和测试退出码、基线 SHA、依赖版本、产物标识及独立评审，报告位于
 `docs/project/hosted-search-contract-verification.md`。不得记录真实会话或凭据。未执行明确标为 NOT RUN，不得标为 PASS。
 
+### E2E-HOOKS-cancel-and-dispose
+
+- **#816 扩展验收：** 命令弹窗显示期间 Stop，真实渲染层移除弹窗，后续弹窗和 exec
+  不再发生，下一命令或回合正常。Electron 驱动通过 CDP 检查 DOM；Runner 测试覆盖
+  长命令、上下文等待取消、工具进度退役及头部副本；进程测试通过就绪信号同步真实父子进程。
+
+- **前置条件：** 隔离 Desktop 配置、本地确定性模型，以及含等待型请求前处理器的可信插件。
+- **步骤：** 发送消息，在处理器等待时停止，释放旧处理器后再次发送。另测等待时销毁
+  Runtime，并加载启动/关闭挂起以及注册未接通事件的夹具。
+- **预期：** 被停止或销毁的请求不调用模型，后续消息正常完成。迟到结果不能重启工作。
+  关闭只执行一次，各处理器等待有界，未接通事件产生诊断但不禁用正常处理器。
+- **规范：** 07-plugins/16 §6。
+- **验收：** 取消及时生效，扩展生命周期等待有界。
+- **里程碑：** Hooks P0。
+- **状态：** Runner 与真实 Runtime/本地 HTTP 集成通过
+  `extensions/runner.test.ts`、`extensions/runtime-lifecycle.test.ts` 自动验证。
+  可信扩展 Electron 驱动通过 CDP 在真实渲染层执行 Stop 路径，并记录弹窗显示和
+  退役后的状态。
 ## Composer 指令源、手动压缩与空记录读取（#795）
 
 **范围：** composer 的斜杠分发、手动压缩 RPC，以及渲染层的持久化记录读取。不调用真实模型或

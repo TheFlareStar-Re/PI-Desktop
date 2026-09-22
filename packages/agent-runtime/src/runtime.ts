@@ -1,4 +1,5 @@
 import { restoreHostedSearchReplay } from "./hosted-search-replay.js";
+import { requestExtensionUi } from "./extensions/ui-request.js";
 import { readLocalRequestErrorDetails } from "./local-request-errors.js";
 import { imageGenerationDescription, imageGenerationParameters } from "./image-generation/tool.js";
 import { scheduledToolParameters, scheduledToolDescriptions } from "./scheduled-tools.js";
@@ -53,7 +54,6 @@ import {
   type TrustedExtensionCommand,
   type TrustedExtensionDiagnostic,
   type TrustedExtensionSpec,
-  type TrustedExtensionUiRequest,
   type TrustedExtensionUiResponse,
 } from "@pi-desktop/shared";
 import {
@@ -2472,7 +2472,7 @@ Delegation rules:
     return true;
   }
 
-  private async setExtensionModel(model: unknown): Promise<boolean> {
+  private async setExtensionModel(model: unknown, signal?: AbortSignal): Promise<boolean> {
     if (!this.extensionRunner || !this.isIdle()) return false;
     const agent = this.extensionRunner.findAgentModel(model);
     if (!agent) return false;
@@ -2489,7 +2489,7 @@ Delegation rules:
         modelId: candidate.id,
         thinkingLevel: this.thinkingLevel,
       });
-      if (result?.ok === false) return false;
+      if (signal?.aborted || this.disposed || result?.ok === false) return false;
       this.applyExtensionAgent(agent, candidate);
       return true;
     } catch {
@@ -2531,7 +2531,7 @@ Delegation rules:
       sessionId: this.sessionId,
       cwd: this.projectPath ?? process.cwd(),
       getModel: () => runtime.model,
-      setModel: (model) => runtime.setExtensionModel(model),
+      setModel: (model, signal) => runtime.setExtensionModel(model, signal),
       modelRegistry: runtime.extensionModelRegistry(),
       getThinkingLevel: () => agentThinkingLevel(runtime.thinkingLevel),
       setThinkingLevel: (level) => {
@@ -2572,15 +2572,16 @@ Delegation rules:
         runtime.setAgentTools(runtime.activeTools());
       },
       getSessionName: () => runtime.extensionSessionName,
-      setSessionName: async (name) => {
-        runtime.extensionSessionName = name;
+      setSessionName: async (name, signal) => {
         await runtime.host.call("session.rename", { id: runtime.sessionId, title: name });
+        if (signal?.aborted || runtime.disposed) return;
+        runtime.extensionSessionName = name;
         void runtime.extensionRunner?.emit("session_info_changed", {
           type: "session_info_changed",
           name,
         });
       },
-      sendUserMessage: async (content, options) => {
+      sendUserMessage: async (content, options, signal) => {
         const text = Array.isArray(content)
           ? content
               .map((part) => (isRecord(part) && typeof part.text === "string" ? part.text : ""))
@@ -2594,7 +2595,7 @@ Delegation rules:
           idempotencyKey: randomUUID(),
           content: text,
         });
-        if (options?.deliverAs === "steer" && pushed?.id) {
+        if (!signal?.aborted && !runtime.disposed && options?.deliverAs === "steer" && pushed?.id) {
           await runtime.host
             .call("session.queuePrioritize", { sessionId: runtime.sessionId, id: pushed.id })
             .catch(() => undefined);
@@ -2623,18 +2624,13 @@ Delegation rules:
           return { cancelled: true };
         }
       },
-      requestUi: (extension, request) =>
-        runtime.host.call<TrustedExtensionUiResponse>("extensions.ui.request", {
+      requestUi: (extension, request, signal) => requestExtensionUi(
+        (envelope) => runtime.host.call<TrustedExtensionUiResponse>("extensions.ui.request", envelope), {
           sessionId: runtime.sessionId,
           extensionId: extension.id,
           extensionLabel: extension.label,
           request,
-        } satisfies {
-          sessionId: string;
-          extensionId: string;
-          extensionLabel: string;
-          request: TrustedExtensionUiRequest;
-        }),
+        }, signal),
       publishCommands: (commands: TrustedExtensionCommand[]) => {
         void runtime.host
           .call("extensions.commands.publish", { sessionId: runtime.sessionId, commands })
@@ -3762,18 +3758,22 @@ Delegation rules:
    * On-demand model resolution for Task-time model overrides. Asks Electron
    * main to authorize and resolve a `providerId/modelId` key outside the
    * opted-in launch catalog. Grants live in a separate cache so they cannot
-   * rewrite definition pins or change launch-time reuse matching.
+   * rewrite definition pins or change launch-time reuse matching. Each new
+   * parent turn replaces the cache so revoked grants must be authorized again.
    */
   private async resolveSubagentModel(
     key: string,
   ): Promise<RuntimeProviderConfig | undefined> {
-    const cached = this.subagentOverrideProviders[key];
+    const grants = this.subagentOverrideProviders;
+    const cached = grants[key];
     if (cached) return cached;
     try {
       const result = await (this.host as any).call(
         "provider.resolveSubagentModel",
         { key },
       );
+      // A late response cannot authorize work in a newer turn or after disposal.
+      if (this.disposed || grants !== this.subagentOverrideProviders) return undefined;
       if (result && typeof result === "object" && "modelId" in result) {
         const provider = result as RuntimeProviderConfig;
         const pinned = this.subagentProviders[key];
@@ -3792,7 +3792,7 @@ Delegation rules:
               providerId: provider.id,
             });
         }
-        this.subagentOverrideProviders[key] = provider;
+        grants[key] = provider;
         return provider;
       }
     } catch {
@@ -3985,29 +3985,35 @@ Delegation rules:
   /**
    * The binding a resumed run keeps (ADR 0279 §4). A live chain records the
    * `providerId/modelId` key it resolved, which is preferred here; a chain
-   * rebuilt from the transcript only knows the model id, matched against what
-   * is configured in this session. `undefined` means the binding is gone.
+   * rebuilt from the transcript only knows the model id. Both paths are limited
+   * to this definition's pins, session inheritance, and current override grants.
    */
-  private resumedChainProvider(
+  private async resumedChainProvider(
     chain: DelegationChain,
-  ): RuntimeProviderConfig | undefined {
+    definition: SubagentDefinition,
+  ): Promise<RuntimeProviderConfig | undefined> {
     const modelId = chain.latestModelId?.trim().toLowerCase();
     if (!modelId) return undefined;
-    const candidates: RuntimeProviderConfig[] = [];
+    const keys = new Set(this.availableSubagentModelKeys());
+    if (definition.model) keys.add(subagentModelKey(definition.model));
+    for (const pin of definition.fallbackModels ?? []) keys.add(subagentModelKey(pin));
+    const binding = (key: string) => keys.has(key)
+      ? this.subagentProviders[key] ?? this.subagentOverrideProviders[key]
+      : undefined;
+    const matches = (candidate: RuntimeProviderConfig | undefined) =>
+      candidate?.modelId.trim().toLowerCase() === modelId;
     if (chain.latestModelKey) {
-      const keyed =
-        this.subagentProviders[chain.latestModelKey] ??
-        this.subagentOverrideProviders[chain.latestModelKey];
-      if (keyed) candidates.push(keyed);
+      const keyed = binding(chain.latestModelKey) ??
+        await this.resolveSubagentModel(chain.latestModelKey);
+      // A known binding must not silently become a different account with the
+      // same model id after its grant disappears.
+      return matches(keyed) ? keyed : undefined;
     }
-    candidates.push(
-      ...Object.values(this.subagentProviders),
-      ...Object.values(this.subagentOverrideProviders),
+    return [
+      this.subagentProvider(definition),
       this.provider,
-    );
-    return candidates.find(
-      (candidate) => candidate.modelId.trim().toLowerCase() === modelId,
-    );
+      ...[...keys].map(binding),
+    ].find(matches);
   }
 
   /** The delegation-model key a resolved binding is registered under, if any. */
@@ -4213,13 +4219,6 @@ Delegation rules:
           );
         }
         const startedAt = Date.now();
-        const running = this.runningDelegations().length;
-        if (running >= MAX_SUBAGENT_CONCURRENCY) {
-          return this.subagentToolError(
-            toolCallId,
-            `${MAX_SUBAGENT_CONCURRENCY} subagents are already running for this session. Wait for some with TaskWait or stop them with TaskStop before delegating more.`,
-          );
-        }
         // The delegate runs in the background (ADR 0089): `Task` returns
         // immediately with a delegation id, and TaskWait converges later.
         const resumeLookup = resume
@@ -4234,9 +4233,24 @@ Delegation rules:
         // never swap models by accident. When the recorded binding is gone the
         // run continues on the definition's current one and says so in its
         // lifecycle details, because refusing would strand the chain forever.
+        const resumeEpoch = this.turnEpoch;
         const resumedProvider = resumedChain
-          ? this.resumedChainProvider(resumedChain)
+          ? await this.resumedChainProvider(resumedChain, definition)
           : undefined;
+        if (this.disposed || this.runCancelled || this.turnHadError || resumeEpoch !== this.turnEpoch) {
+          return this.subagentToolError(toolCallId, "The parent turn ended before delegation could resume.");
+        }
+        // Authorization may yield while a parallel Task starts this chain.
+        if (resume) {
+          const current = this.resolveResumeChain(resume, definition.name);
+          if (!current.ok) return this.subagentToolError(toolCallId, current.message);
+        }
+        if (this.runningDelegations().length >= MAX_SUBAGENT_CONCURRENCY) {
+          return this.subagentToolError(
+            toolCallId,
+            `${MAX_SUBAGENT_CONCURRENCY} subagents are already running for this session. Wait for some with TaskWait or stop them with TaskStop before delegating more.`,
+          );
+        }
         if (resumedProvider) provider = resumedProvider;
         const modelChangedFrom =
           resumedChain?.latestModelId && !resumedProvider
@@ -6008,7 +6022,19 @@ Delegation rules:
     this.setAgentMessages(messages);
     this.setAgentTools(tools);
     return {
-      messages: this.agent.state.messages,
+      // The loop owns its context array. pi appends every streamed assistant
+      // message and every tool result to the context it was handed, and its own
+      // `message_end` listener appends the same message object to
+      // `state.messages`; handing over the live array makes both land in one
+      // array, so every message of a run's later iterations is stored twice.
+      // The next turn is then built from that array, and the duplicate of an
+      // assistant message that carries text plus a tool call survives the
+      // request guard as a text-only clone sitting between the call and the
+      // result answering it. pi-ai then closes the still-pending call with a
+      // synthesized "No result provided" output next to the real one — two
+      // outputs for one call id, which the provider rejects (D620).
+      // `createContextSnapshot()` copies for the same reason.
+      messages: [...this.agent.state.messages],
       tools,
       systemPrompt: this.agent.state.systemPrompt,
     } as AgentContext;
@@ -7667,7 +7693,9 @@ Delegation rules:
 
     // Keep every new user turn small. A capability loaded for the preceding
     // turn can be searched again when the new task actually needs it.
+    this.subagentOverrideProviders = {};
     this.resetDeferredToolsForPrompt();
+    this.refreshResumablePrompt();
     // Claims are message-scoped: a later prompt must observe edited or newly
     // created instruction files instead of reusing a previous chain.
     this.pathInstructionClaims.clear();
@@ -7754,7 +7782,9 @@ Delegation rules:
     this.runCancelled = false;
     this.turnSubagentUsage = undefined;
     // Capabilities and path-scoped instruction claims belong to one prompt.
+    this.subagentOverrideProviders = {};
     this.resetDeferredToolsForPrompt();
+    this.refreshResumablePrompt();
     this.pathInstructionClaims.clear();
     this.pendingUserMessageId = userMessageId;
     this.resetRunRecoveryState();
@@ -7804,6 +7834,10 @@ Delegation rules:
         }
       }
       await this.extensionBeforeAgentStart(modelInput);
+      if (this.runCancelled || this.disposed) {
+        this.keepPreflightUserMessage(incomingUserMessage);
+        throw turnAbortedError("Turn aborted during extension hooks");
+      }
       if (typeof modelInput === "string") {
         await this.agent.prompt(modelInput);
       } else {
@@ -7841,7 +7875,6 @@ Delegation rules:
     return { turnId: this.turnId };
   }
 
-  /** `before_agent_start` hook: extensions may replace the system prompt for this turn. */
   private async extensionBeforeAgentStart(input: string | RuntimePrompt): Promise<void> {
     const runner = this.extensionRunner;
     if (!runner) return;
@@ -7850,7 +7883,8 @@ Delegation rules:
       // Handlers edit the headers object in place, as they do in the pi CLI.
       const headers: Record<string, string> = { ...(this.provider.headers ?? {}) };
       await runner.emit("before_provider_headers", { type: "before_provider_headers", headers });
-      this.extensionProviderHeaders = headers;
+      if (this.runCancelled || this.disposed) return;
+      this.extensionProviderHeaders = { ...headers };
     }
     if (!runner.hasHandlers("before_agent_start")) return;
     const base = this.composeSystemPrompt();
@@ -7996,6 +8030,7 @@ Delegation rules:
     this.acceptingSteering = false;
     this.gracefulStopRequested = false;
     this.runCancelled = true;
+    this.extensionRunner?.cancelPending();
     this.resolvePendingAskTools();
     this.abortRunningDelegations();
     this.turnSubagentUsage = undefined;
@@ -8033,9 +8068,10 @@ Delegation rules:
   }
 
   async dispose(): Promise<void> {
+    if (this.disposed) return;
     const runner = this.extensionRunner;
     this.extensionRunner = undefined;
-    if (runner) await runner.dispose().catch(() => undefined);
+    const closingExtensions = runner?.dispose();
     this.streamSink.dispose();
     this.disposed = true;
     this.acceptingSteering = false;
@@ -8059,5 +8095,6 @@ Delegation rules:
     this.cleanupActiveToolProgress();
     if (this.compactionInProgress) this.compactionAborted = true;
     this.compactionAbort?.abort();
+    await closingExtensions;
   }
 }

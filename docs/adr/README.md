@@ -20,6 +20,7 @@ Each ADR includes:
 
 | ID | Title | Status |
 |---|---|---|
+| trusted-extension-operation-ownership | [Trusted extension operation ownership](trusted-extension-operation-ownership.md) | Implemented candidate |
 | scheduled-desktop-automations | [Desktop automation scheduling](scheduled-desktop-automations.md) | Accepted for implementation |
 | subagent-model-fallback | [Ordered subagent model fallback](subagent-model-fallback.md) | Accepted for implementation |
 | subagent-model-opt-in | [Separate Subagent Model Opt-In from Definition Pins](subagent-model-opt-in.md) | Accepted for implementation |

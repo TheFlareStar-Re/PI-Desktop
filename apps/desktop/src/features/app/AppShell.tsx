@@ -16,6 +16,7 @@ import { cx, TooltipButton } from "../../components/ui";
 import { StartupRecovery } from "../../components/StartupRecovery";
 import { WindowControls } from "../../components/WindowControls";
 import { WorkPanel } from "../../components/workpanel/WorkPanel";
+import { useCopyTex } from "../../hooks/use-copy-tex";
 import { api } from "../../lib/api";
 import { CollapsedTitlebarActions, RoutePending } from "./chrome";
 import { useAppShellRuntime } from "./useAppShellRuntime";
@@ -87,6 +88,7 @@ export function AppShell() {
     sidebarToggleShortcut,
     workPanelToggleTooltip,
   } = useAppShellRuntime();
+  useCopyTex();
 
   // A boot that never reaches the shell gets a surface it can act on instead of
   // a window that only knows how to wait (issue #831). Rendered as a direct child

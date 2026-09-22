@@ -106,9 +106,6 @@ importers:
       lucide-react:
         specifier: ^1.31.0
         version: 1.31.0(react@19.2.8)
-      marked:
-        specifier: ^18.0.9
-        version: 18.0.9
       mermaid:
         specifier: ^11.16.1
         version: 11.16.1
@@ -142,6 +139,9 @@ importers:
       remark-math:
         specifier: ^6.0.0
         version: 6.0.0
+      remark-parse:
+        specifier: ^11.0.0
+        version: 11.0.0
       shiki:
         specifier: ^4.4.3
         version: 4.4.3
@@ -151,6 +151,9 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      unified:
+        specifier: ^11.0.5
+        version: 11.0.5
       vite:
         specifier: ^7.3.6
         version: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.33.0)(yaml@2.9.0)
@@ -3207,11 +3210,6 @@ packages:
 
   marked@18.0.11:
     resolution: {integrity: sha512-HnslJfsZkRPBDJRHvVtAaWlZHEpSu7u8LgQuJCELjRKuWR+hpq4A7sLq3p8HaI9ypVoXDXxV34CsQJEe1+J5Aw==}
-    engines: {node: '>= 20'}
-    hasBin: true
-
-  marked@18.0.9:
-    resolution: {integrity: sha512-/Sa4qiiHZxf0/FQdBBowr9q4r10krCwMvpK48FUBdXdUXScDxiQGR9zCPrFgRVR5LU3iySOiIjy09ZQvADir1w==}
     engines: {node: '>= 20'}
     hasBin: true
 
@@ -7407,8 +7405,6 @@ snapshots:
   marked@16.4.2: {}
 
   marked@18.0.11: {}
-
-  marked@18.0.9: {}
 
   matcher@3.0.0:
     dependencies:

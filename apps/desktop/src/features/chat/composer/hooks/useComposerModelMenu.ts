@@ -14,9 +14,11 @@ import { useAppStore } from "../../../../stores/app-store";
 import {
   composerModelMatchesQuery,
   composerModelsForProvider,
-  composerProviderDisplayName,
-  composerProviderSearchText,
 } from "../../../../lib/composer-models";
+import {
+  providerDisplayName,
+  providerSearchText,
+} from "../../../../lib/provider-display";
 import { providerThinkingLevels } from "../../../../lib/session-thinking";
 import {
   sessionThinkingMenuLevels,
@@ -127,8 +129,8 @@ export function useComposerModelMenu({
           );
           return {
             provider: candidate,
-            providerDisplayName: composerProviderDisplayName(candidate),
-            providerSearchText: composerProviderSearchText(candidate),
+            providerDisplayName: providerDisplayName(candidate),
+            providerSearchText: providerSearchText(candidate),
             models,
           };
         })

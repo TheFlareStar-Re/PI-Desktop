@@ -740,6 +740,27 @@ criterion-by-criterion report of what was met and the evidence observed.
   (D608). Anthropic-family endpoints, including DeepSeek's, reject the whole
   turn with `tool_use ids must be unique` (issue #718), which leaves the session
   unable to continue.
+- The guard compares the wire-visible call id — the part before the `|` that
+  separates the Responses item id — and drops an assistant message whole once
+  every tool call in it was already claimed, because keeping its residual text
+  would leave a message sitting between a call and the result answering it. A
+  message that replays a claimed call while carrying a new one keeps its new
+  call in place; no writer produces that partial replay, and the guard does not
+  reorder messages to close the gap it leaves (D620).
+- The agent loop owns its context array. `prepareNextTurn` hands pi a copy of
+  the live state — for a delegate turn boundary too — exactly as pi's own
+  `createContextSnapshot()` does for `prompt()` and `continue()`: pi's loop
+  appends each streamed assistant message and each tool result to the array it
+  was given, while its `message_end` listener appends the same message to
+  `state.messages`, so handing over the live array stored every message of a
+  run's later iterations twice. The next turn's first request was built from
+  that array, and the duplicate of an assistant message carrying text plus a
+  tool call survived as a text-only clone between the call and its result —
+  pi-ai then closed the still-pending call with a synthesized output next to the
+  real one, and the endpoint rejected the turn with
+  `Duplicate tool output for call_id`. In a delegate the same doubling doubled
+  the estimate at the following boundary and left the trailing row a fallback
+  carries onto a model it cannot resume from (D620).
 - Restored checkpoints clear provider usage from retained assistant messages
   for budgeting. That usage measured the pre-compacted request and must not
   make the summary + tail appear as large as the discarded context.
@@ -814,7 +835,9 @@ core set rather than the on-demand catalog of §7.1:
   include definition-only pins, while only the former authorizes cached
   overrides and the model summary. Missing keys default to an empty list;
   successful on-demand resolution is cached separately from launch opt-in and
-  does not rewrite definition pins or runtime reuse matching. On-demand
+  does not rewrite definition pins or runtime reuse matching. Grants expire at
+  each new parent prompt or approved plan/goal execution; late responses from
+  an older turn cannot repopulate the cache. On-demand
   provider matching uses the same unique id/vendor/name rule as pin resolution.
   A changed opt-in list retires the idle runtime on the next launch. Pins remain usable
   by their own definitions when `model` is omitted or when `Task.model` repeats
@@ -953,8 +976,12 @@ Resume is strictly same-session and never queues: resuming a running
 delegation is a tool error telling the parent to converge with `TaskWait`
 first, and a chain has at most one live record at a time. `model` and `resume`
 together are rejected, and a resumed run keeps the chain's recorded binding:
-the `providerId/modelId` key it resolved is preferred, a chain rebuilt from the
-transcript is matched by model id, and when nothing resolves it the run
+the `providerId/modelId` key it resolved is preferred and reauthorized on demand
+when its turn grant has expired. A chain rebuilt from the transcript is matched
+by model id only among the current definition pin/fallbacks, the session binding,
+and currently authorized overrides. Other definitions' private pins are excluded.
+A known key never falls through to another account just because its model id
+matches. When nothing authorized resolves it the run
 continues on the definition's current binding and records the previous model id
 as `modelChangedFrom` in its lifecycle details. Changing models on purpose means
 starting a new delegation. An unknown id, an id belonging to another definition,

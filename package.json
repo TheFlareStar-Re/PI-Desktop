@@ -30,6 +30,7 @@
     "test:e2e:composer-autocomplete": "node scripts/e2e-composer-autocomplete.mjs",
     "test:e2e:composer-paste": "node scripts/e2e-composer-paste.mjs",
     "test:e2e:transcript": "node scripts/e2e-transcript-render.mjs",
+    "test:e2e:copy-tex": "node scripts/e2e-copy-tex.mjs",
     "test:e2e:transcript-disclosure": "node scripts/e2e-transcript-disclosure-anchor.mjs",
     "test:e2e:images": "node scripts/e2e-image-generation.mjs && node scripts/e2e-image-generation-ui.mjs && node scripts/e2e-image-chat.mjs",
     "test:e2e:provider-order": "node scripts/e2e-provider-order.mjs",

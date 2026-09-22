@@ -571,6 +571,15 @@ Goal 批准所承诺的内容与 Plan 批准所承诺的内容完全相同：`mo
   对每个 `toolCall` id 只保留第一次出现，丢弃其后重复的调用或结果，使提供商校验的「一调用一结果」配对保持完整；没有重复的
   请求原样返回。一旦发生丢弃，会在 `agent` 日志通道上报告一次，带上会话与 id（D608）。Anthropic 系端点（含 DeepSeek）
   会以 `tool_use ids must be unique` 拒绝整个回合（issue #718），使该会话无法继续。
+- 守卫按“上线的 id”比较调用与结果，即 Responses item id 之前、以 `|` 分隔的那一段；当一条辅助消息里的工具调用全部已被更早的消息占有时，
+  整条消息被丢弃，因为保留它剩下的文本会把一条消息塞进调用与回答它的结果之间。若一条消息在复写已占用调用的同时还带一个新调用，则保留该
+  消息及其新调用；目前没有写入方会产生这种部分复写，守卫也不会重排消息来填补它留下的空隙（D620）。
+- 智能体循环拥有自己的上下文数组。`prepareNextTurn` 交给 pi 的是实时状态的副本（委托侧的回合边界同样如此），与 pi 自己的
+  `createContextSnapshot()` 在 `prompt()`/`continue()` 里的做法一致：pi 的循环会把每个流式辅助消息与每个工具结果 push 进它拿到的
+  数组，而它的 `message_end` 监听器又把同一消息 push 回 `state.messages`，因此交出活数组会把一个回合中较晚迭代的每条消息都存两份。
+  下一回合的首个请求正是用该数组组装的，其中“带文本与工具调用的辅助消息”的重复项会残留为只剩文本的克隆，卡在调用与结果之间——pi-ai
+  随后会为这个仍处于待配对的调用合成一条输出，与真实结果并列，端点以 `Duplicate tool output for call_id` 拒绝整个回合。在委托运行时，
+  同样的重复还会让下一个边界的估算翻倍，并让备用模型拿到的末行无法被 `continue()` 续跑（D620）。
 - 视觉运行时只从会话绑定的附件、scratch 与项目根目录中水合持久化的图片引用。
   处于 10 MB 内联安全上限之内的图片会成为临时的 pi-ai 图片块；超限或不可用的
   图片则退化为安全的 `@path` 回退。超限历史的水合会直接复制文件，不会先把内容
@@ -720,6 +729,13 @@ Stop / 运行时销毁。主 Agent 用 `TaskStop` 判断要不要取消；运行
 `modelChangedFrom`。有意换模型意味着新建一个委托。未知 id、属于另一个定义的 id、
 不可恢复的状态、超出读预算的链，以及行已经不在的链，各自返回一个说明原因的工具错误；
 对未知 id，还会一并列出当前可复用的 id。
+
+On-demand grants expire at each new parent prompt or approved plan/goal execution;
+late responses cannot restore expired grants. Resume reauthorizes a remembered key
+when necessary. Model-id matching is limited to the current definition's pin and
+fallbacks, session inheritance, and current override grants; other definitions'
+private pins are excluded. A denied known key never selects another account by
+model id (#841).
 
 父级通过系统提示发现可复用的链：那里列出每条链最新的 `delegationId`、它的目标，以及它
 读过的文件最多 `MAX_RESUMABLE_LISTED_FILES`（8）个（超出部分带 `(+N more)` 后缀）。
