@@ -326,7 +326,8 @@ fn snapshot_policy(root: &Path, excluded_roots: &[PathBuf]) -> PolicySnapshot {
             }
             let name = entry.file_name().to_string_lossy();
             if entry.file_type().is_some_and(|kind| kind.is_dir()) {
-                return !ignore_rules::DEFAULT_IGNORE_DIRS.contains(&name.as_ref());
+                return !ignore_rules::DEFAULT_IGNORE_DIRS.contains(&name.as_ref())
+                    && !ignore_rules::SHELL_REVIEW_IGNORE_DIRS.contains(&name.as_ref());
             }
             !ignore_rules::is_sensitive_file_name(&name)
         });
@@ -579,6 +580,49 @@ mod tests {
             );
         }
         assert!(!result.reviews.iter().any(|item| item.path == "dirty.txt"));
+    }
+
+    #[test]
+    fn gradle_caches_do_not_consume_capture_budget_or_hide_source_changes() {
+        let data = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let cache = workspace.path().join(".gradle/8.4/fileHashes");
+        let nested_cache = workspace.path().join("module/.gradle");
+        fs::create_dir_all(&cache).unwrap();
+        fs::create_dir_all(&nested_cache).unwrap();
+        fs::create_dir_all(workspace.path().join("src")).unwrap();
+        for index in 0..=MAX_WALK_ENTRIES {
+            fs::write(cache.join(format!("{index}.bin")), [0, 1]).unwrap();
+        }
+        fs::write(nested_cache.join("state.lock"), [0, 1]).unwrap();
+        fs::write(workspace.path().join("src/Main.java"), "before\n").unwrap();
+        let capture = start(data.path(), workspace.path());
+        fs::write(cache.join("0.bin"), [0, 2]).unwrap();
+        fs::write(nested_cache.join("state.lock"), [0, 2]).unwrap();
+        fs::write(workspace.path().join("src/Main.java"), "after\n").unwrap();
+        let result = capture.finish(true);
+        assert_eq!(result.status, CaptureStatus::Complete);
+        assert_eq!(result.reviews.len(), 1);
+        let change = &result.reviews[0];
+        assert_eq!(change.path, "src/Main.java");
+        assert_eq!(change.additions, 1);
+        assert_eq!(change.deletions, 1);
+        assert_eq!(
+            rollback_change(
+                data.path(),
+                "session",
+                &change.snapshot_id,
+                Some(workspace.path())
+            )
+            .unwrap()
+            .status,
+            "rolledBack"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("src/Main.java")).unwrap(),
+            "before\n"
+        );
+        assert_eq!(fs::read(cache.join("0.bin")).unwrap(), [0, 2]);
     }
 
     #[test]

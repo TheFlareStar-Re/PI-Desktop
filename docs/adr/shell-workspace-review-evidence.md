@@ -36,11 +36,15 @@ exit, timeout or cancellation. Denied commands do not execute or create capture
 evidence. A complete no-op has an empty array and renders no file summary.
 
 The legacy singular `review` remains readable. Consumers select each record by
-snapshot id; rollback updates only that record in the tool message, and forking
-marks all inherited records non-reversible. Existing transcript JSON supports
-the additive details without a database migration or protocol version change.
-Old shell messages without evidence remain explicitly unavailable; later builds
-must not invent historical before content from the current workspace.
+snapshot id; rollback updates only that record in its original tool message,
+including records produced by a delegate and persisted in the parent session.
+Turn summaries assign delegate evidence through each raw message's original
+`parentToolCallId`; visual resume-chain merging does not transfer edits between
+turns, and delayed delegates are never inferred from time or adjacency. Forking
+marks inherited records non-reversible. Existing transcript JSON supports the
+additive details without a database migration or protocol version change. Old
+shell messages without evidence remain explicitly unavailable; later builds must
+not invent historical before content from the current workspace.
 
 ## Consequences
 
@@ -49,8 +53,14 @@ must not invent historical before content from the current workspace.
 - Same-workspace mutations trade parallel throughput for unambiguous host-owned
   capture intervals. Reads and operations on different workspaces stay independent.
 - Large or ignored workspaces can yield partial evidence; coverage is explicit.
-- The visual turn summary still groups loaded parent-session records and reports
-  cumulative active edit counts, not a net durable-host-turn diff.
+- The visual turn summary groups parent tools plus records owned by attached
+  `Task` delegates and reports cumulative active edit counts, not a net
+  durable-host-turn diff. Session Review includes the same original message and
+  snapshot identities so file selection and rollback remain available.
+- Bash-only records beneath an exact `.gradle` directory segment are omitted by
+  frontend consumers as incidental build-cache evidence, including old session
+  logs. A file named `.gradle`, explicit Write/Edit records, and unrelated binary
+  files remain visible.
 - Review remains host-owned. The renderer never scans files or writes rollback
   content directly.
 

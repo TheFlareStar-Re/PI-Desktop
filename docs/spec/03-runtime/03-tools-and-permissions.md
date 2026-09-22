@@ -276,7 +276,10 @@ type ReviewChange = {
 - Review snapshot files live outside the workspace and are removed with their
   session; orphaned session directories are swept on host startup.
 - Admitted Bash execution compares bounded pre/post workspace snapshots using
-  the existing ignore rules, excluding scratch/host data and links. Its details
+  the existing ignore rules, excluding scratch/host data, links, and root or
+  nested `.gradle` cache directories before traversal consumes scan budgets.
+  This extra exclusion is limited to automatic Bash review capture; explicit
+  Read/Write/Edit and search scopes are unchanged. Its details
   contain `root: "workspace"`, `reviews: ReviewChange[]`, and `reviewCapture`
   with status `complete`, `partial`, or `unavailable`. Unknown/unvisited files
   are not assumed absent. No-op complete captures have an empty array.

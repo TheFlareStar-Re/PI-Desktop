@@ -890,8 +890,8 @@ hover action row and is not shown at rest, including when Chromium keeps
 `:hover` after the pointer leaves the window.
 
 An inactive assistant turn shows a file summary below the response when its
-loaded top-level tool messages contain workspace Write/Edit or captured Bash
-review snapshots. The localized heading reads "Edited N files this turn"
+loaded parent or durably Task-owned delegate tool messages contain workspace
+Write/Edit or captured Bash review snapshots. The localized heading reads "Edited N files this turn"
 (Simplified Chinese: "本轮编辑 N 个文件"). Up to five files are shown in full.
 When there are more than five files, the summary initially shows the first three
 and offers a show-more control with the remaining count; collapsing restores
@@ -918,8 +918,14 @@ Bash mutations captured before nonzero exit or interruption remain reviewable.
 Binary/oversized records retain their existing review limits. Bash results use
 `reviews` plus explicit complete/partial/unavailable capture metadata. Capture
 metadata remains internal: the chat card has no scope/disclaimer subtitle or
-empty unavailable card. With no file records it is absent. Nested delegates
-are not attributed to the parent summary.
+empty unavailable card. With no file records it is absent. Delegate edits are
+attributed through their original `parentToolCallId` to the spawning Task's
+turn, including delayed results. Resuming a delegate may merge its visual
+process card, but never moves earlier edit evidence to the resumed turn.
+Summary and Review preserve the original message/snapshot identities and apply
+the same admission rules. Bash records under `.gradle` cache directories are
+excluded, including records loaded from older sessions; explicit Write/Edit
+records and unrelated binary assets remain inspectable.
 Existing paging and compaction boundaries can yield partial summaries: only the
 loaded visual turn is grouped, without claiming a complete durable host-turn
 audit. Loading more history updates the projection. The additive tool details

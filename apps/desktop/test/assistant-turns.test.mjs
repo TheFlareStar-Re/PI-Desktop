@@ -495,6 +495,113 @@ test("a resumed delegation continues in the latest Task card (ADR 0279)", () => 
     activity.items[1].delegate.items.map((item) => item.message.id),
     ["delegate-1", "delegate-2"],
   );
+  assert.deepEqual(
+    turn.ownedToolMessages.map((item) => item.id),
+    ["task-1", "task-2"],
+  );
+});
+
+test("resumed delegates keep raw tool ownership on each original Task turn", () => {
+  const task1 = message("task-1", "tool", "report", {
+    toolName: "Task",
+    toolCallId: "task-1",
+    toolResult: { details: { delegationId: "del-1" } },
+  });
+  const edit1 = message("edit-1", "tool", "done", {
+    toolName: "Edit",
+    parentToolCallId: "task-1",
+  });
+  const task2 = message("task-2", "tool", "report", {
+    toolName: "Task",
+    toolCallId: "task-2",
+    toolArgs: { resume: "del-1" },
+    toolResult: { details: { delegationId: "del-2" } },
+  });
+  const edit2 = message("edit-2", "tool", "done", {
+    toolName: "Edit",
+    parentToolCallId: "task-2",
+  });
+  const { entries } = buildTranscriptEntries([
+    message("user-1", "user", "First"),
+    task1,
+    edit1,
+    message("answer-1", "assistant", "First done"),
+    message("user-2", "user", "Second"),
+    task2,
+    edit2,
+    message("answer-2", "assistant", "Second done"),
+  ]);
+  const first = entries[1];
+  const second = entries[3];
+
+  assert.equal(first.kind, "assistant-turn");
+  assert.equal(second.kind, "assistant-turn");
+  assert.deepEqual(
+    first.ownedToolMessages.map((item) => item.id),
+    ["task-1", "edit-1"],
+  );
+  assert.deepEqual(
+    second.ownedToolMessages.map((item) => item.id),
+    ["task-2", "edit-2"],
+  );
+  assert.equal(first.parts[0].items[0].delegate, undefined);
+  assert.deepEqual(
+    second.parts[0].items[0].delegate.items.map((item) => item.message.id),
+    ["edit-1", "edit-2"],
+  );
+});
+
+test("delayed delegate and rollback updates invalidate only the owning turn", () => {
+  const task = message("task", "tool", "report", {
+    toolName: "Task",
+    toolCallId: "task-call",
+  });
+  const base = [
+    message("user-1", "user", "First"),
+    task,
+    message("answer-1", "assistant", "First done"),
+    message("user-2", "user", "Second"),
+    message("answer-2", "assistant", "Second done"),
+  ];
+  const initial = buildTranscriptEntries(base).entries;
+  const delayedEdit = message("delayed-edit", "tool", "done", {
+    toolName: "Edit",
+    parentToolCallId: "task-call",
+    toolResult: { details: { review: { state: "active" } } },
+  });
+  const delayed = buildTranscriptEntries([...base, delayedEdit]).entries;
+  const reusedDelayed = reuseTranscriptEntries(initial, delayed);
+
+  assert.notEqual(reusedDelayed[1], initial[1]);
+  assert.equal(reusedDelayed[3], initial[3]);
+  assert.deepEqual(
+    reusedDelayed[1].ownedToolMessages.map((item) => item.id),
+    ["task", "delayed-edit"],
+  );
+
+  const rolledBackEdit = {
+    ...delayedEdit,
+    toolResult: { details: { review: { state: "rolledBack" } } },
+  };
+  const rolledBack = buildTranscriptEntries([...base, rolledBackEdit]).entries;
+  const reusedRollback = reuseTranscriptEntries(delayed, rolledBack);
+
+  assert.notEqual(reusedRollback[1], delayed[1]);
+  assert.equal(reusedRollback[3], delayed[3]);
+  assert.equal(
+    reusedRollback[1].ownedToolMessages.at(-1),
+    rolledBackEdit,
+  );
+
+  const stable = reuseTranscriptEntries(
+    rolledBack,
+    buildTranscriptEntries([...base, rolledBackEdit]).entries,
+  );
+  assert.equal(stable[1], rolledBack[1]);
+  assert.equal(
+    stable[1].ownedToolMessages,
+    rolledBack[1].ownedToolMessages,
+  );
 });
 
 test("a resume link whose parent Task row is gone leaves the card intact", () => {

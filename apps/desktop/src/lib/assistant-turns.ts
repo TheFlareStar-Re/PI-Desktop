@@ -58,8 +58,9 @@ export type AssistantTurnEntry = {
   parts: AssistantTurnPart[];
   /** Timestamp of the user message that initiated this turn, when loaded. */
   startedAt?: string;
+  /** Raw tool rows owned by this turn, including original Task delegate children. */
+  ownedToolMessages: UiMessage[];
 };
-
 export type TranscriptEntry =
   | { kind: "message"; message: UiMessage }
   | { kind: "compaction"; mark: ContextCompactionMark }
@@ -212,6 +213,7 @@ export function buildTranscriptEntries(
       id: message.id,
       parts: [],
       ...(turnStartedAt ? { startedAt: turnStartedAt } : {}),
+      ownedToolMessages: [],
     };
     canStartTurnFromUser = false;
     entries.push(turn);
@@ -292,6 +294,35 @@ export function buildTranscriptEntries(
     turnStartedAt = undefined;
     canStartTurnFromUser = false;
     for (const mark of marks) entries.push({ kind: "compaction", mark });
+  }
+
+  // File evidence follows the original Task call, independently of the visual
+  // resume-chain projection above. Iterating raw messages preserves persisted
+  // session order even when parent and delegate tools were interleaved.
+  const directToolOwner = new Map<string, AssistantTurnEntry>();
+  const taskOwner = new Map<string, AssistantTurnEntry>();
+  for (const entry of entries) {
+    if (entry.kind !== "assistant-turn") continue;
+    for (const part of entry.parts) {
+      if (part.kind !== "activity") continue;
+      for (const item of part.items) {
+        if (item.kind !== "tool") continue;
+        directToolOwner.set(item.message.id, entry);
+        if (
+          item.message.toolCallId &&
+          isDelegationStartTool(item.message.toolName)
+        ) {
+          taskOwner.set(item.message.toolCallId, entry);
+        }
+      }
+    }
+  }
+  for (const message of messages) {
+    if (message.role !== "tool") continue;
+    const owner = message.parentToolCallId
+      ? taskOwner.get(message.parentToolCallId)
+      : directToolOwner.get(message.id);
+    owner?.ownedToolMessages.push(message);
   }
 
   for (const entry of entries) {
@@ -379,6 +410,24 @@ function reuseActivityItem(
   return previous;
 }
 
+export function assistantTurnOwnedToolsEqual(
+  previous: readonly UiMessage[],
+  next: readonly UiMessage[],
+): boolean {
+  return (
+    previous.length === next.length &&
+    next.every((message, index) => message === previous[index])
+  );
+}
+
+function reuseMessageList(
+  previous: readonly UiMessage[],
+  next: UiMessage[],
+): UiMessage[] {
+  return assistantTurnOwnedToolsEqual(previous, next)
+    ? (previous as UiMessage[])
+    : next;
+}
 function reuseTurnPart(
   previous: AssistantTurnPart | undefined,
   next: AssistantTurnPart,
@@ -435,15 +484,20 @@ function reuseTranscriptEntry(
     const parts = next.parts.map((part, index) =>
       reuseTurnPart(previous.parts[index], part),
     );
+    const ownedToolMessages = reuseMessageList(
+      previous.ownedToolMessages,
+      next.ownedToolMessages,
+    );
     if (
       previous.anchorId === next.anchorId &&
       previous.startedAt === next.startedAt &&
       parts.length === previous.parts.length &&
-      parts.every((part, index) => part === previous.parts[index])
+      parts.every((part, index) => part === previous.parts[index]) &&
+      ownedToolMessages === previous.ownedToolMessages
     ) {
       return previous;
     }
-    return { ...next, parts };
+    return { ...next, parts, ownedToolMessages };
   }
   return next;
 }

@@ -1,8 +1,4 @@
-import type { UiMessage } from "@pi-desktop/shared";
-import {
-  assistantTurnTools,
-  type AssistantTurnEntry,
-} from "./assistant-turns";
+import type { AssistantTurnEntry } from "./assistant-turns";
 import {
   reviewCaptureFromMessage,
   reviewChangesMetadataFromMessage,
@@ -30,35 +26,16 @@ export type TurnFileSummaryData = {
   hasCompleteCapture: boolean;
   hasPartialCapture: boolean;
   hasUnavailableCapture: boolean;
-  hasExcludedSubagentEdits: boolean;
 };
 
 type IndexedReviewChange = ReviewChangeMetadataEntry & { index: number };
 
-function delegateToolMessages(entry: AssistantTurnEntry): UiMessage[] {
-  return entry.parts.flatMap((part) =>
-    part.kind === "activity"
-      ? part.items.flatMap((item) =>
-          item.kind === "tool" && item.delegate
-            ? item.delegate.items.flatMap((delegateItem) =>
-                delegateItem.kind === "tool" ? [delegateItem.message] : [],
-              )
-            : [],
-        )
-      : [],
-  );
-}
 
-/**
- * Project message-owned workspace evidence from one visual assistant turn.
- * Delegate tools are inspected only for honest scope flags and are never made
- * rollback-capable in the parent session.
- */
+/** Project durable workspace evidence owned by one visual assistant turn. */
 export function summarizeTurnFileChanges(
   entry: AssistantTurnEntry,
 ): TurnFileSummaryData {
-  const tools = assistantTurnTools(entry);
-  const delegates = delegateToolMessages(entry);
+  const tools = entry.ownedToolMessages;
   const latestBySnapshot = new Map<string, IndexedReviewChange>();
   let sequence = 0;
 
@@ -128,12 +105,6 @@ export function summarizeTurnFileChanges(
       hasCompleteCapture: captures.includes("complete"),
       hasPartialCapture: captures.includes("partial"),
       hasUnavailableCapture: captures.includes("unavailable"),
-      hasExcludedSubagentEdits: delegates.some(
-        (message) =>
-          reviewChangesMetadataFromMessage(message).length > 0 ||
-          (message.toolStatus === "success" &&
-            (message.toolName === "Write" || message.toolName === "Edit")),
-      ),
     },
   );
 }

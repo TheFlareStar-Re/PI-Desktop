@@ -48,6 +48,9 @@ pub const DEFAULT_IGNORE_DIRS: &[&str] = &[
     ".git",
 ];
 
+/// Extra directories excluded only from automatic shell review scans.
+pub(crate) const SHELL_REVIEW_IGNORE_DIRS: &[&str] = &[".gradle"];
+
 /// File names hidden from unscoped walks (spec 15 §4).
 const DEFAULT_IGNORE_FILES: &[&str] = &[".DS_Store"];
 
@@ -134,6 +137,7 @@ fn configure_walker_inner(
     scoped: bool,
     excluded_roots: Vec<PathBuf>,
     include_user_global: bool,
+    extra_ignored_dirs: &'static [&'static str],
 ) {
     if !scoped {
         if let Some(file) = workspace_ignore_file(ignore_root) {
@@ -166,7 +170,7 @@ fn configure_walker_inner(
                         .and_then(Path::file_name)
                         .is_some_and(|parent| parent == ".git"));
             }
-            return !is_default_ignored_dir_name(name);
+            return !is_default_ignored_dir_name(name) && !extra_ignored_dirs.contains(&name);
         }
         if is_sensitive_file_name(name) {
             return false;
@@ -181,7 +185,7 @@ fn configure_walker_inner(
 /// Apply the ignore layers to an in-process walk. `scoped` walks (explicit
 /// `path` argument) keep only the security denylist.
 pub fn configure_walker(walker: &mut WalkBuilder, ignore_root: &Path, scoped: bool) {
-    configure_walker_inner(walker, ignore_root, scoped, Vec::new(), true);
+    configure_walker_inner(walker, ignore_root, scoped, Vec::new(), true, &[]);
 }
 
 pub(crate) fn configure_shell_review_walker(
@@ -190,7 +194,16 @@ pub(crate) fn configure_shell_review_walker(
     excluded_roots: Vec<PathBuf>,
 ) {
     walker.git_global(false);
-    configure_walker_inner(walker, ignore_root, false, excluded_roots, false);
+    // Build-tool bookkeeping is not a user edit and must not consume the
+    // bounded shell scan. Explicit Read/Write/Edit and search keep their scope.
+    configure_walker_inner(
+        walker,
+        ignore_root,
+        false,
+        excluded_roots,
+        false,
+        SHELL_REVIEW_IGNORE_DIRS,
+    );
 }
 
 /// Extra `rg` arguments implementing the same layers. `.env.*` is left to the

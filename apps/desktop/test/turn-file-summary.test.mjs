@@ -238,24 +238,200 @@ test("binary and truncated records remain available without line hunks", () => {
   assert.equal(summary.files.find((file) => file.path === "generated.txt").entries[0].change.truncated, true);
 });
 
-test("nested delegate edits remain excluded from parent rollback groups", () => {
+test("Task-owned delegate edits are included while parent Bash .gradle caches are hidden", () => {
   const task = tool("task", "Task", { status: "running" });
-  const nestedShell = shell(
-    "nested-shell",
-    [review("snapshot-nested", "src/delegate.ts")],
-    "complete",
-    { parentToolCallId: "call-task", agentName: "worker" },
+  const delegateEdits = Array.from({ length: 6 }, (_, index) =>
+    workspaceEdit(
+      `delegate-${index + 1}`,
+      `snapshot-delegate-${index + 1}`,
+      `src/delegate-${index + 1}.ts`,
+      {},
+      { parentToolCallId: "call-task", agentName: "fixer" },
+    ),
   );
+  const caches = shell(
+    "parent-build",
+    Array.from({ length: 7 }, (_, index) =>
+      review(`cache-${index + 1}`, `.gradle/caches/cache-${index + 1}.bin`, {
+        binary: true,
+        additions: 0,
+        deletions: 0,
+      }),
+    ),
+  );
+  const direct = workspaceEdit("direct", "snapshot-direct", "src/direct.ts");
   const [entry] = turnEntries([
     task,
-    nestedShell,
+    ...delegateEdits,
+    caches,
+    direct,
     message("answer", "assistant", { content: "Done" }),
   ]);
   const summary = summarizeTurnFileChanges(entry);
 
-  assert.equal(summary.fileCount, 0);
-  assert.equal(summary.hasBashTool, false);
-  assert.equal(summary.hasExcludedSubagentEdits, true);
+  assert.equal(summary.fileCount, 7);
+  assert.equal(summary.files.some((file) => file.path.includes(".gradle")), false);
+  assert.deepEqual(
+    new Set(summary.files.map((file) => file.path)),
+    new Set(["src/direct.ts", ...delegateEdits.map((_, index) => `src/delegate-${index + 1}.ts`)]),
+  );
+  assert.equal(
+    summary.files.find((file) => file.path === "src/delegate-1.ts").entries[0].message,
+    delegateEdits[0],
+  );
+  assert.equal(summary.hasBashTool, true);
+});
+
+test("delayed delegate records remain owned by their Task turn", () => {
+  const task = tool("task", "Task", { status: "running" });
+  const delayed = workspaceEdit(
+    "delayed",
+    "snapshot-delayed",
+    "src/delayed.ts",
+    {},
+    { parentToolCallId: "call-task", agentName: "fixer" },
+  );
+  const [first, second] = turnEntries([
+    message("user-1", "user"),
+    task,
+    message("answer-1", "assistant", { content: "Delegated" }),
+    message("user-2", "user"),
+    message("answer-2", "assistant", { content: "Later turn" }),
+    delayed,
+  ]);
+
+  assert.deepEqual(
+    summarizeTurnFileChanges(first).files.map((file) => file.path),
+    ["src/delayed.ts"],
+  );
+  assert.equal(summarizeTurnFileChanges(second).fileCount, 0);
+});
+
+test("resumed delegate edits stay with their original Task turns", () => {
+  const firstTask = tool("task-1", "Task", { delegationId: "delegate-1" });
+  const firstEdit = workspaceEdit(
+    "delegate-first",
+    "snapshot-first",
+    "src/first-delegate.ts",
+    {},
+    { parentToolCallId: "call-task-1", agentName: "fixer" },
+  );
+  const secondTask = tool(
+    "task-2",
+    "Task",
+    { delegationId: "delegate-2" },
+    { toolArgs: { resume: "delegate-1" } },
+  );
+  const secondEdit = workspaceEdit(
+    "delegate-second",
+    "snapshot-second",
+    "src/second-delegate.ts",
+    {},
+    { parentToolCallId: "call-task-2", agentName: "fixer" },
+  );
+  const [first, second] = turnEntries([
+    message("user-1", "user"),
+    firstTask,
+    firstEdit,
+    message("answer-1", "assistant", { content: "First pass" }),
+    message("user-2", "user"),
+    secondTask,
+    secondEdit,
+    message("answer-2", "assistant", { content: "Second pass" }),
+  ]);
+
+  assert.deepEqual(
+    summarizeTurnFileChanges(first).files.map((file) => file.path),
+    ["src/first-delegate.ts"],
+  );
+  assert.deepEqual(
+    summarizeTurnFileChanges(second).files.map((file) => file.path),
+    ["src/second-delegate.ts"],
+  );
+});
+
+test("same-turn resume groups original Task ownership without duplicating files", () => {
+  const [entry] = turnEntries([
+    message("user", "user"),
+    tool("task-1", "Task", { delegationId: "delegate-1" }),
+    workspaceEdit(
+      "delegate-first",
+      "snapshot-first",
+      "src/first.ts",
+      {},
+      { parentToolCallId: "call-task-1" },
+    ),
+    tool(
+      "task-2",
+      "Task",
+      { delegationId: "delegate-2" },
+      { toolArgs: { resume: "delegate-1" } },
+    ),
+    workspaceEdit(
+      "delegate-second",
+      "snapshot-second",
+      "src/second.ts",
+      {},
+      { parentToolCallId: "call-task-2" },
+    ),
+    message("answer", "assistant", { content: "Done" }),
+  ]);
+
+  assert.deepEqual(
+    summarizeTurnFileChanges(entry).files.map((file) => file.path),
+    ["src/second.ts", "src/first.ts"],
+  );
+});
+
+test("interleaved parent and delegate edits keep raw latest-first snapshot order", () => {
+  const path = "src/shared.ts";
+  const [entry] = turnEntries([
+    message("user", "user"),
+    tool("task", "Task", { status: "running" }),
+    workspaceEdit(
+      "delegate-early",
+      "snapshot-delegate-early",
+      path,
+      {},
+      { parentToolCallId: "call-task" },
+    ),
+    workspaceEdit("parent-middle", "snapshot-parent-middle", path),
+    workspaceEdit(
+      "delegate-late",
+      "snapshot-delegate-late",
+      path,
+      {},
+      { parentToolCallId: "call-task" },
+    ),
+    message("answer", "assistant", { content: "Done" }),
+  ]);
+
+  assert.deepEqual(
+    summarizeTurnFileChanges(entry).files[0].entries.map(
+      (record) => record.change.snapshotId,
+    ),
+    [
+      "snapshot-delegate-late",
+      "snapshot-parent-middle",
+      "snapshot-delegate-early",
+    ],
+  );
+});
+
+test("orphan delegate records are not attached to an unrelated Task turn", () => {
+  const [entry] = turnEntries([
+    tool("task", "Task", { status: "running" }),
+    workspaceEdit(
+      "orphan",
+      "snapshot-orphan",
+      "src/orphan.ts",
+      {},
+      { parentToolCallId: "call-missing-task", agentName: "fixer" },
+    ),
+    message("answer", "assistant", { content: "Done" }),
+  ]);
+
+  assert.equal(summarizeTurnFileChanges(entry).fileCount, 0);
 });
 
 test("malformed and legacy records keep the same counts without exposing hunks", () => {

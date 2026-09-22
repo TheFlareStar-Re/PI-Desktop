@@ -76,6 +76,16 @@ function isExecutedReviewTool(message: UiMessage): boolean {
   );
 }
 
+/** Shell build caches are incidental evidence, not user-authored workspace edits. */
+export function isIncidentalShellCacheReview(
+  message: UiMessage,
+  path: string,
+): boolean {
+  if (message.toolName !== "Bash") return false;
+  const segments = path.split(/[\\/]+/).filter(Boolean);
+  return segments.slice(0, -1).some((segment) => segment === ".gradle");
+}
+
 function parseHunks(value: unknown): DiffHunk[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((hunk) => {
@@ -147,7 +157,7 @@ function parseReviewChange(value: unknown): ReviewChange | null {
   };
 }
 
-function reviewRecordsFromMessage<T>(
+function reviewRecordsFromMessage<T extends { path: string }>(
   message: UiMessage,
   parse: (value: unknown) => T | null,
   snapshotIdOf: (item: T) => string,
@@ -163,7 +173,9 @@ function reviewRecordsFromMessage<T>(
   const changes = new Map<string, T>();
   for (const candidate of candidates) {
     const change = parse(candidate);
-    if (change) changes.set(snapshotIdOf(change), change);
+    if (change && !isIncidentalShellCacheReview(message, change.path)) {
+      changes.set(snapshotIdOf(change), change);
+    }
   }
   return [...changes.values()];
 }
@@ -228,7 +240,6 @@ export function reviewChangesFromMessages(
   >();
   let sequence = 0;
   for (const message of messages) {
-    if (message.parentToolCallId) continue;
     for (const change of reviewChangesFromMessage(message)) {
       latestBySnapshot.set(change.snapshotId, { message, change, sequence });
       sequence += 1;

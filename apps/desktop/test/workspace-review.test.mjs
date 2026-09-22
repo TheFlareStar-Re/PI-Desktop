@@ -173,23 +173,104 @@ test("rollback state updates only the requested snapshot in review and reviews",
   assert.equal(reviewChangesFromMessage(updated)[1].state, "rolledBack");
 });
 
-test("session review history excludes nested delegate snapshots", () => {
+test("session review history includes delegate records with original identities", () => {
   const parent = tool();
   const nested = tool({
-    id: "nested-shell",
+    id: "nested-edit",
+    toolName: "Edit",
     parentToolCallId: "parent-task-call",
     toolResult: {
       details: {
         root: "workspace",
-        reviews: [review("snapshot-nested", "delegate.ts")],
+        review: review("snapshot-nested", "delegate.ts"),
+      },
+    },
+  });
+  const orphan = tool({
+    id: "orphan-edit",
+    toolName: "Edit",
+    parentToolCallId: "missing-task-call",
+    toolResult: {
+      details: {
+        root: "workspace",
+        review: review("snapshot-orphan", "orphan.ts"),
+      },
+    },
+  });
+  const rolledBack = tool({
+    ...nested,
+    toolResult: {
+      details: {
+        root: "workspace",
+        review: review("snapshot-nested", "delegate.ts", {
+          state: "rolledBack",
+        }),
+      },
+    },
+  });
+
+  const entries = reviewChangesFromMessages([parent, nested, orphan, rolledBack]);
+  assert.deepEqual(
+    entries.map((entry) => entry.change.path),
+    ["index.html", "styles.css", "orphan.ts", "delegate.ts"],
+  );
+  const delegateEntry = entries.at(-1);
+  assert.equal(delegateEntry.message, rolledBack);
+  assert.equal(delegateEntry.change.snapshotId, "snapshot-nested");
+  assert.equal(delegateEntry.change.state, "rolledBack");
+});
+
+test("only Bash records with an exact .gradle path segment are hidden", () => {
+  const bash = tool({
+    toolResult: {
+      details: {
+        root: "workspace",
+        reviews: [
+          review("gradle-root", ".gradle/caches/root.bin", { binary: true }),
+          review("gradle-nested", "module\\.gradle\\cache.bin", { binary: true }),
+          review("gradle-prefix", ".gradle-cache/kept.bin", { binary: true }),
+          review("gradle-basename", "module/.gradle", { binary: true }),
+          review("binary", "assets/kept.bin", {
+            binary: true,
+            additions: 0,
+            deletions: 0,
+          }),
+        ],
         reviewCapture: { status: "complete" },
+      },
+    },
+  });
+  const explicitEdit = tool({
+    toolName: "Edit",
+    toolResult: {
+      details: {
+        root: "workspace",
+        review: review("explicit-gradle", ".gradle/explicit.txt"),
+      },
+    },
+  });
+  const explicitWrite = tool({
+    toolName: "Write",
+    toolResult: {
+      details: {
+        root: "workspace",
+        review: review("explicit-gradle-write", "module/.gradle/explicit.txt"),
       },
     },
   });
 
   assert.deepEqual(
-    reviewChangesFromMessages([parent, nested]).map((entry) => entry.change.path),
-    ["index.html", "styles.css"],
+    reviewChangesFromMessage(bash).map((change) => change.path),
+    [".gradle-cache/kept.bin", "module/.gradle", "assets/kept.bin"],
+  );
+  assert.deepEqual(
+    reviewChangesMetadataFromMessage(bash).map((change) => change.path),
+    [".gradle-cache/kept.bin", "module/.gradle", "assets/kept.bin"],
+  );
+  assert.equal(reviewChangeFromMessage(explicitEdit)?.path, ".gradle/explicit.txt");
+  assert.equal(
+    reviewChangeFromMessage(explicitWrite)?.path,
+    "module/.gradle/explicit.txt",
   );
 });
 

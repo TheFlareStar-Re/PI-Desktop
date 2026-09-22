@@ -14206,6 +14206,9 @@ plugin-form fixtures in an isolated temporary directory at runtime.
   64KiB. Read with `contentLimit: 64 * 1024`, as the desktop does, and compare
   the real frontend turn-file projection with its pre-restart result. Verify
   that full uncapped evidence is unchanged and capped rollback states update.
+  Include a Task whose delegate performs native Write/Edit, followed by parent
+  Bash writes to source and `.gradle` caches. Resume the delegate in a later
+  user turn and deliver a late record for the original Task.
   switch between sessions. Inspect a bounded transcript window.
 - **Expected:** The final answer and recorded-file summary remain outside the
   process disclosure. The summary deduplicates snapshots and counts paths;
@@ -14223,6 +14226,12 @@ plugin-form fixtures in an isolated temporary directory at runtime.
   repeated clicks reopen its details. Selection stays within the originating
   session and turn, including when another turn edited the same path. The chat
   itself never expands nested diff cards from the file summary.
+  Delegate source edits remain in their original Task turn, even when resumed
+  process cards combine history. Review opens their original snapshots and
+  persists guarded rollback after restart. Bash `.gradle` records are excluded
+  from both new captures and old display records; explicit Edit/Write and
+  unrelated binary assets remain. Orphan delegate messages do not acquire a
+  turn through adjacency, and changed evidence invalidates memoized summaries.
 - **Automation:** `apps/desktop/test/turn-file-summary.test.mjs` covers projection;
   the mounted transcript fixture covers expansion, rollback state, and the
   failed-Write/scratch-Write/Bash-copy/final-answer user path. `test:e2e:shell-review`
@@ -14231,6 +14240,11 @@ plugin-form fixtures in an isolated temporary directory at runtime.
   nonzero exit, reload persisted multi-file evidence, roll back a single snapshot
   without changing siblings, and reject a conflict after a later external edit.
   Rust tests cover bounds, links, ignore rules and same-workspace serialization.
+  The native scenario also executes delegated Write/Edit, captures a real source
+  write alongside root and nested `.gradle` mutations, reloads parent links,
+  and verifies delegated rollback persistence and conflict protection. A Rust
+  fixture fills `.gradle` beyond the scan's file budget and verifies that the
+  source mutation remains completely captured and independently reversible.
   Performance regressions also cover unchanged post-scan file bodies not being
   retained and metadata-only file summaries not reading diff hunks.
 - **Specs:** 04-ux/08-component-spec; ADR 0043.

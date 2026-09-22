@@ -16,6 +16,7 @@ import {
   assistantTurnResponseDuration,
   assistantTurnResponseOutputTokens,
   assistantTurnUsage,
+  assistantTurnOwnedToolsEqual,
   reuseReadonlyMap,
   subagentRunsEqual,
   type AssistantTurnEntry,
@@ -71,6 +72,10 @@ function assistantTurnPropsEqual(
     previous.runtimeActivity !== next.runtimeActivity ||
     previous.entry.startedAt !== next.entry.startedAt ||
     previous.entry.anchorId !== next.entry.anchorId ||
+    !assistantTurnOwnedToolsEqual(
+      previous.entry.ownedToolMessages,
+      next.entry.ownedToolMessages,
+    ) ||
     previous.entry.parts.length !== next.entry.parts.length
   ) {
     return false;

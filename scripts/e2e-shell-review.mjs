@@ -20,6 +20,7 @@ import { resolveHostBinary } from "./e2e/host.mjs";
 register(new URL("../apps/desktop/test/helpers/ts-import-hooks.mjs", import.meta.url));
 const { buildTranscriptEntries } = await import("../apps/desktop/src/lib/assistant-turns.ts");
 const { summarizeTurnFileChanges } = await import("../apps/desktop/src/lib/turn-file-summary.ts");
+const { reviewChangesFromMessages } = await import("../apps/desktop/src/lib/workspace-review.ts");
 
 function summaryFor(messages) {
   const entry = buildTranscriptEntries(messages).entries.find((item) => item.kind === "assistant-turn");
@@ -166,10 +167,11 @@ function persistedReviews(detail, messageId) {
   return details.reviews;
 }
 
-async function appendNativeToolMessage(host, sessionId, toolName, toolCallId, args, result) {
+async function appendNativeToolMessage(host, sessionId, toolName, toolCallId, args, result, parentToolCallId) {
   const message = {
     id: toolCallId,
     role: "tool",
+    ...(parentToolCallId ? { parentToolCallId, agentName: "fixer" } : {}),
     content: JSON.stringify(result.content, null, 2),
     createdAt: new Date().toISOString(),
     status: "complete",
@@ -349,6 +351,88 @@ async function scenario({ host, dataDir, workspace }) {
   assert(finalReviews.get("reviewed/app.css")?.state === "rolledBack", shortJson([...finalReviews.values()]));
   assert(finalReviews.get("reviewed/app.html")?.state === "active", shortJson([...finalReviews.values()]));
   assert(finalReviews.get("reviewed/app.js")?.state === "active", shortJson([...finalReviews.values()]));
+  await delegatedEditsScenario(host, workspace, shell);
+}
+
+async function delegatedEditsScenario(host, workspace, shell) {
+  const created = await createSession(host, workspace, "Delegated source review E2E");
+  const session = await configureSession(host, created, "agent", "auto");
+  const taskCallId = randomUUID();
+  const append = (message) => host.call("session.appendMessage", {
+    sessionId: session.id,
+    message: { createdAt: new Date().toISOString(), status: "complete", ...message },
+  });
+  await append({ id: randomUUID(), role: "user", content: "Update the source and build it." });
+  await append({
+    id: taskCallId, role: "tool", content: "Started fixer", toolName: "Task",
+    toolCallId: taskCallId, toolStatus: "success", toolArgs: { agent: "fixer" },
+  });
+  await mkdir(join(workspace, "src"), { recursive: true });
+  writeFileSync(join(workspace, "src/Main.java"), "before\n");
+  const read = await host.call("tools.execute", {
+    sessionId: session.id, toolCallId: randomUUID(), toolName: "Read",
+    args: { path: "src/Main.java" }, mode: "agent",
+  });
+  assert(read.ok && read.content?.tag, "native read did not return the edit anchor");
+  const delegated = [];
+  for (const [toolName, args] of [
+    ["Write", { path: "src/Feature.java", content: "feature\n" }],
+    ["Edit", { path: "src/Main.java", tag: read.content.tag, ops: "PUT 1.=1:\n+after" }],
+  ]) {
+    const toolCallId = randomUUID();
+    const result = await host.call("tools.execute", {
+      sessionId: session.id, toolCallId, toolName, args, mode: "agent",
+    });
+    assert(result.ok && result.content?.review, `delegated ${toolName} missing native review`);
+    const message = await appendNativeToolMessage(
+      host, session.id, toolName, toolCallId, args, result, taskCallId,
+    );
+    delegated.push({ message, review: result.content.review });
+  }
+  // Cache writes and a real source write occur in the same native shell interval.
+  const cacheDirs = [".gradle/8.4/fileHashes", "module/.gradle"];
+  for (const dir of cacheDirs) {
+    await mkdir(join(workspace, dir), { recursive: true });
+    writeFileSync(join(workspace, dir, "state.lock"), Buffer.from([0, 1]));
+  }
+  const binarySource = join(workspace, "reviewed/cache-source.bin");
+  writeFileSync(binarySource, Buffer.from([0, 2]));
+  const command = copyCommand([
+    ...cacheDirs.map((dir) => ({ source: binarySource, target: `${dir}/state.lock` })),
+    { source: join(workspace, "src/Feature.java"), target: "src/Shell.java" },
+  ]);
+  const built = await executeBash(host, session.id, shell, command);
+  const shellReviews = assertCompleteCapture(built.content, 1, "source with Gradle caches");
+  assert(shellReviews[0].path === "src/Shell.java", "cache displaced actual shell edit");
+  await appendNativeToolMessage(host, session.id, "Bash", built.toolCallId, { command }, built);
+  await append({ id: randomUUID(), role: "assistant", content: "Source updated and built." });
+
+  await host.restart(PROTOCOL_VERSION);
+  const options = { id: session.id, contentLimit: 64 * 1024 };
+  const displayed = (await host.call("session.get", options)).session.messages;
+  const summary = summaryFor(displayed);
+  assert(isDeepStrictEqual([...summary.paths].sort(), ["src/Feature.java", "src/Main.java", "src/Shell.java"]), "delegated source edits missing after restart");
+  assert(summary.additions === 3 && summary.deletions === 1, "delegated line counts lost");
+  const reviewEntries = reviewChangesFromMessages(displayed);
+  assert(reviewEntries.length === 3, "Review panel and turn summary disagree");
+  for (const { message, review } of delegated) {
+    const loaded = displayed.find((item) => item.id === message.id);
+    assert(loaded?.parentToolCallId === taskCallId, "delegated parent identity lost on reload");
+    assertReviewIdentity(loaded?.toolResult?.details?.review, review);
+    assert(reviewEntries.some((entry) => entry.message.id === message.id && entry.change.snapshotId === review.snapshotId), "Review navigation lost delegated identity");
+  }
+  const feature = delegated.find((item) => item.review.path === "src/Feature.java").review;
+  const rollback = await host.call("review.rollback", { sessionId: session.id, snapshotId: feature.snapshotId });
+  assert(rollback.status === "rolledBack", "parent session cannot roll back delegated snapshot");
+  assert(!existsSync(join(workspace, "src/Feature.java")), "delegated add was not rolled back");
+  const main = delegated.find((item) => item.review.path === "src/Main.java").review;
+  writeFileSync(join(workspace, "src/Main.java"), "later user edit\n");
+  const conflict = await host.call("review.rollback", { sessionId: session.id, snapshotId: main.snapshotId });
+  assert(conflict.status === "conflict", "delegated rollback failed to guard newer contents");
+  assert(readFileSync(join(workspace, "src/Main.java"), "utf8") === "later user edit\n", "delegated rollback overwrote user contents");
+  await host.restart(PROTOCOL_VERSION);
+  const reloaded = (await host.call("session.get", options)).session.messages;
+  assert(reviewChangesFromMessages(reloaded).find((entry) => entry.change.snapshotId === feature.snapshotId)?.change.state === "rolledBack", "delegated rollback state not persisted");
 }
 
 try {

@@ -3,7 +3,8 @@ import { flushSync } from "react-dom";
 import { createInstance } from "i18next";
 import { I18nextProvider } from "react-i18next";
 import { en } from "@pi-desktop/i18n";
-import type { AppSettings, UiMessage } from "@pi-desktop/shared";
+import type { AppSettings, ReviewChange, UiMessage } from "@pi-desktop/shared";
+import { WorkPanel } from "../../apps/desktop/src/components/workpanel/WorkPanel";
 import { AssistantTurn } from "../../apps/desktop/src/features/chat/transcript/AssistantTurn";
 import { TranscriptDisclosureProvider } from "../../apps/desktop/src/features/chat/transcript/disclosure";
 import { MessageRow } from "../../apps/desktop/src/features/chat/transcript/MessageRow";
@@ -11,6 +12,7 @@ import { ThinkingDisplayModeRow } from "../../apps/desktop/src/components/settin
 import { buildTranscriptEntries } from "../../apps/desktop/src/lib/assistant-turns";
 import { TranscriptSearchContext } from "../../apps/desktop/src/lib/transcript-search-context";
 import type { TranscriptSearchTarget } from "../../apps/desktop/src/lib/transcript-reading";
+import { reviewChangesFromMessage } from "../../apps/desktop/src/lib/workspace-review";
 import { useAppStore } from "../../apps/desktop/src/stores/app-store";
 
 function assert(value: unknown, message: string): asserts value {
@@ -30,6 +32,65 @@ const message = (
   ...extra,
 });
 
+const painted = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+function review(
+  messageId: string,
+  snapshotId: string,
+  path: string,
+  additions: number,
+  deletions: number,
+  extra: Partial<ReviewChange> = {},
+): ReviewChange {
+  return {
+    version: 1,
+    messageId,
+    snapshotId,
+    path,
+    operation: "edit",
+    status: "modified",
+    state: "active",
+    additions,
+    deletions,
+    hunks: [
+      {
+        header: "@@ -1,2 +1,4 @@",
+        lines: [
+          { type: "del", text: "class Main {}" },
+          { type: "add", text: "class Main {" },
+          { type: "add", text: "  static void run() {}" },
+          { type: "add", text: "}" },
+        ],
+      },
+    ],
+    reversible: true,
+    ...extra,
+  };
+}
+
+function DelegatedEditReviewFixture({ sessionId }: { sessionId: string }) {
+  const messages = useAppStore((state) => state.messages);
+  const workPanelOpen = useAppStore((state) => state.workPanelOpen);
+  const entry = buildTranscriptEntries(messages).entries.find(
+    (item) => item.kind === "assistant-turn",
+  );
+  assert(entry?.kind === "assistant-turn", "delegated edit turn missing");
+  return (
+    <div className="delegated-edit-review-fixture">
+      <TranscriptDisclosureProvider>
+        <TranscriptSearchContext.Provider value={null}>
+          <AssistantTurn
+            entry={entry}
+            sessionId={sessionId}
+            isActive={false}
+          />
+        </TranscriptSearchContext.Provider>
+      </TranscriptDisclosureProvider>
+      {workPanelOpen ? <WorkPanel containerWidth={1280} sidebarCollapsed /> : null}
+    </div>
+  );
+}
+
 /** Real mounted React components: disclosure ownership, preferences and search. */
 export async function turnProcessProbe() {
   const i18n = createInstance();
@@ -40,7 +101,8 @@ export async function turnProcessProbe() {
   });
   const container = document.createElement("div");
   document.body.append(container);
-  const initialSettings = useAppStore.getState().settings;
+  const initialState = useAppStore.getState();
+  const previousBridge = window.piDesktop;
   const settings: AppSettings = {
     defaultMode: "agent",
     theme: "light",
@@ -679,10 +741,212 @@ export async function turnProcessProbe() {
       !container.querySelector(".message-timestamp"),
       "invalid user timestamp is omitted",
     );
+    const delegatedSessionId = "delegated-edit-summary";
+    const delegatedTaskCallId = "task-call-delegated-edit";
+    const delegatedEditMessageId = "delegated-edit-main";
+    const delegatedSnapshotId = "snapshot-delegated-edit-main";
+    const delegatedMessages: UiMessage[] = [
+      message("delegated-user", "user", "Update the Java entry point"),
+      message("delegated-task", "tool", "Delegated successfully", {
+        toolName: "Task",
+        toolCallId: delegatedTaskCallId,
+        toolStatus: "success",
+        toolArgs: {
+          subagent_type: "fixer",
+          description: "Update Main.java",
+          prompt: "Apply the requested Java change.",
+        },
+        toolResult: {
+          details: { delegationId: "delegated-run", status: "completed" },
+        },
+      }),
+      message(delegatedEditMessageId, "tool", "Updated src/Main.java", {
+        parentToolCallId: delegatedTaskCallId,
+        agentName: "fixer",
+        toolName: "Edit",
+        toolCallId: "delegated-native-edit-call",
+        toolStatus: "success",
+        toolArgs: { path: "src/Main.java" },
+        toolResult: {
+          details: {
+            root: "workspace",
+            review: review(
+              delegatedEditMessageId,
+              delegatedSnapshotId,
+              "src/Main.java",
+              3,
+              1,
+            ),
+          },
+        },
+      }),
+      message("parent-gradle-build", "tool", "Build completed", {
+        toolName: "Bash",
+        toolCallId: "parent-gradle-build-call",
+        toolStatus: "success",
+        toolArgs: { command: ".\\gradlew.bat build" },
+        toolResult: {
+          details: {
+            root: "workspace",
+            exitCode: 0,
+            review: review(
+              "parent-gradle-build",
+              "snapshot-gradle-current",
+              ".gradle/8.10/fileHashes/fileHashes.bin",
+              0,
+              0,
+              { binary: true },
+            ),
+            reviews: [
+              review(
+                "parent-gradle-build",
+                "snapshot-gradle-history",
+                "module/.gradle/buildOutputCleanup/cache.properties",
+                1,
+                1,
+              ),
+            ],
+            reviewCapture: { status: "complete" },
+          },
+        },
+      }),
+      message("delegated-final", "assistant", "The Java change is complete.", {
+        status: "complete",
+      }),
+      message("delegated-resume-user", "user", "Continue the same delegate"),
+      message("delegated-resume-task", "tool", "Resumed successfully", {
+        toolName: "Task",
+        toolCallId: "task-call-delegated-resume",
+        toolStatus: "success",
+        toolArgs: { agent: "fixer", resume: "delegated-run" },
+        toolResult: {
+          details: { delegationId: "delegated-resume-run", status: "completed" },
+        },
+      }),
+      message("delegated-resume-final", "assistant", "No further edits needed.", {
+        status: "complete",
+      }),
+    ];
+    let rollbackInput: { sessionId: string; snapshotId: string } | undefined;
+    let rollbackTarget: { messageId: string; snapshotId: string } | undefined;
+    const rollbackWorkspaceChange = initialState.rollbackWorkspaceChange;
+    window.piDesktop = {
+      invoke: async (_channel, input) => {
+        rollbackInput = input as { sessionId: string; snapshotId: string };
+        return {
+          ok: true,
+          data: {
+            status: "rolledBack",
+            snapshotId: rollbackInput.snapshotId,
+          },
+        };
+      },
+      on: () => () => undefined,
+      channels:
+        previousBridge?.channels ??
+        ({} as NonNullable<typeof window.piDesktop>["channels"]),
+      platform: "win32",
+    };
+    flushSync(() =>
+      useAppStore.setState({
+        activeSessionId: delegatedSessionId,
+        isRunning: false,
+        messages: delegatedMessages,
+        workPanelOpen: false,
+        workPanelTabs: [],
+        activeWorkPanelTabId: null,
+        workPanelContexts: {},
+        rollbackWorkspaceChange: async (messageId, snapshotId) => {
+          rollbackTarget = { messageId, snapshotId };
+          return rollbackWorkspaceChange(messageId, snapshotId);
+        },
+      }),
+    );
+    flushSync(() =>
+      root.render(
+        <I18nextProvider i18n={i18n}>
+          <DelegatedEditReviewFixture sessionId={delegatedSessionId} />
+        </I18nextProvider>,
+      ),
+    );
+    const delegatedSummary = container.querySelector<HTMLElement>(
+      ".turn-file-summary",
+    );
+    const delegatedFile = container.querySelector<HTMLButtonElement>(
+      ".turn-file-summary-file-header",
+    );
+    check(
+      delegatedSummary?.getAttribute("aria-label") ===
+        i18n.t("chat.turnFilesEdited", { count: 1 }) &&
+        container.querySelectorAll(".turn-file-summary-file-header").length === 1,
+      "delegated native edit contributes the only summarized file",
+    );
+    check(
+      delegatedFile?.querySelector(".turn-file-summary-path")?.textContent ===
+        "src/Main.java" &&
+        !delegatedSummary?.textContent?.includes(".gradle"),
+      "summary keeps the delegated source path and excludes parent Gradle caches",
+    );
+    check(
+      delegatedSummary
+        ?.querySelector(".turn-file-summary-totals")
+        ?.getAttribute("aria-label") ===
+        i18n.t("chat.turnFilesEditTotalsLabel", { additions: 3, deletions: 1 }) &&
+        delegatedFile?.getAttribute("aria-label") ===
+          `src/Main.java · ${i18n.t("chat.reviewChangeCounts", {
+            additions: 3,
+            deletions: 1,
+          })}`,
+      "delegated native edit reports its actual addition and deletion totals",
+    );
+    click(delegatedFile);
+    await painted();
+    const reviewSelection =
+      useAppStore.getState().workPanelContexts[delegatedSessionId]?.reviewSelection;
+    check(
+      useAppStore.getState().activeWorkPanelTabId === "review" &&
+        reviewSelection?.selectedPath === "src/Main.java" &&
+        reviewSelection.snapshotIds.length === 1 &&
+        reviewSelection.snapshotIds[0] === delegatedSnapshotId,
+      "delegated summary click opens Review with the original snapshot",
+    );
+    check(
+      container.querySelectorAll(".review-scroll .review-change-card").length === 1 &&
+        container
+          .querySelector(".review-scroll .review-change-card-path")
+          ?.textContent?.includes("src/Main.java") === true,
+      "Review renders only the selected delegated native edit",
+    );
+    const delegatedRollback = container.querySelector<HTMLButtonElement>(
+      ".review-scroll .review-change-rollback",
+    );
+    click(delegatedRollback);
+    await painted();
+    const rolledBackDelegate = useAppStore
+      .getState()
+      .messages.find((item) => item.id === delegatedEditMessageId);
+    check(
+      rollbackTarget?.messageId === delegatedEditMessageId &&
+        rollbackTarget.snapshotId === delegatedSnapshotId &&
+        rollbackInput?.sessionId === delegatedSessionId &&
+        rollbackInput.snapshotId === delegatedSnapshotId &&
+        Boolean(
+          rolledBackDelegate &&
+            reviewChangesFromMessage(rolledBackDelegate)[0]?.state === "rolledBack",
+        ),
+      "Review rollback preserves the delegated message id and snapshot id",
+    );
+    check(
+      container.querySelector(".turn-file-summary-totals")?.getAttribute("aria-label") ===
+        i18n.t("chat.turnFilesEditTotalsLabel", { additions: 0, deletions: 0 }),
+      "rollback updates the original turn summary after the delegate card moves to a resumed turn",
+    );
+
     return { ok: true, checks: notes };
   } finally {
     flushSync(() => root.unmount());
-    useAppStore.setState({ settings: initialSettings });
+    useAppStore.setState(initialState, true);
+    window.piDesktop = previousBridge;
     container.remove();
   }
 }
