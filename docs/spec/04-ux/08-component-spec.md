@@ -2112,12 +2112,13 @@ Renderer: `apps/desktop/src/components/Markdown.tsx` + `apps/desktop/src/lib/shi
   pane. Offscreen Mermaid diagrams defer loading and layout until they approach
   the viewport.
 - **Underfilled partial history**: when a latest page folds to less than one
-  viewport, unused vertical space stays above its content. The last row therefore
-  sits at the existing composer reserve before and during automatic older-page
-  loading, not partway up the screen despite a zero scroll offset. This alignment
-  persists for that retained pane after history is exhausted. Complete short
-  conversations keep their initial top alignment; search ranges use normal
-  reading layout. Overflowing histories have no added blank scrollable region.
+  viewport while older history is still available, unused vertical space stays
+  above its content. The last row therefore sits at the existing composer
+  reserve before and during automatic older-page loading, not partway up the
+  screen despite a zero scroll offset. Once the transcript is exhausted, a
+  short conversation returns to the ordinary top-aligned layout. Search ranges
+  use normal reading layout. Overflowing histories have no added blank
+  scrollable region.
 - **Bounded first commit**: activating a session whose history exceeds the
   initial mount budget mounts only the newest entries in that commit, with a
   spacer holding the remaining scroll height, and expands to the steady-state

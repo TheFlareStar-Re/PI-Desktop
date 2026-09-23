@@ -10661,7 +10661,7 @@ This test plan spec is accepted when:
       bottom relative to the real composer dock's top from the first commit:
       an idle transcript without trailing cards keeps the existing 16px gap
       (within pixel rounding), not a large blank area below the answer.
-      Repeat when the final page still underfills, on retained hide/reveal, and
+      Repeat with another page still available, on retained hide/reveal, and
       across composer draft heights. No hidden or duplicate reads may start.
       A complete short conversation remains top-aligned. This test must fail
       even when a misplaced underfilled pane reports scrollTop == max == 0.

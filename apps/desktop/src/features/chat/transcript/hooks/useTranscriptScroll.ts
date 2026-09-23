@@ -648,14 +648,10 @@ export function useTranscriptScroll({
     [historyEntries, tailEntry],
   );
   const hasEarlierHistory = transcriptWindow.hiddenAbove > 0 || hasMoreBefore;
-  // A partial tail can be shorter than the viewport even when 100 physical
-  // records were loaded. Keep its newest row against the composer while older
-  // pages arrive, and after the final page, without changing complete short chats.
-  const tailAlignedRef = useRef(false);
-  const alignHistoryTail = !readingWindow && (hasEarlierHistory || tailAlignedRef.current);
-  useLayoutEffect(() => {
-    if (alignHistoryTail) tailAlignedRef.current = true;
-  }, [alignHistoryTail]);
+  // Only an unread older page needs tail alignment. `hiddenAbove` is already
+  // loaded content withheld by the bounded mount window; it must not make a
+  // completed short conversation look like a partial server history tail.
+  const alignHistoryTail = !readingWindow && hasMoreBefore;
 
 
   const revealEarlierHistory = useCallback(() => {

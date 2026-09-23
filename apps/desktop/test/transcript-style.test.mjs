@@ -586,6 +586,6 @@ test("partial tail pages absorb underfilled space above their content without a 
   assert.match(content, /margin-top:\s*auto;/);
   assert.doesNotMatch(scroller + content, /min-height|padding|justify-content:\s*flex-end/);
   assert.match(transcriptSource, /data-tail-aligned=\{alignHistoryTail \|\| undefined\}/);
-  assert.match(transcriptSource, /const alignHistoryTail = !readingWindow && \(hasEarlierHistory \|\| tailAlignedRef\.current\)/);
-  assert.match(transcriptSource, /if \(alignHistoryTail\) tailAlignedRef\.current = true/);
+  assert.match(transcriptSource, /const alignHistoryTail = !readingWindow && hasMoreBefore/);
+  assert.doesNotMatch(transcriptSource, /tailAlignedRef/);
 });

@@ -172,15 +172,22 @@ export async function verifyUnderfilledEntry(i18n: i18n, tail: UiMessage[], olde
         await frames(8, "idle");
         const final = samples.at(-1)!;
         if (paged) {
+          const completesHistory = name === "single-page-overflow" || name === "exhausted-underfill";
           check(name === "exhausted-underfill" ? final.max === 0 : final.max >= 100,
             "final geometry did not reach the intended underfill/overflow state");
           check(reads.length === (multiple ? 2 : 1), "paging continued after overflow or exhaustion");
           const visibleSamples = samples.filter((item) => item.visible);
-          const worstGap = Math.max(...visibleSamples.map((item) => Math.abs(item.gap - 16)));
-          check(worstGap <= 2, `dock-to-answer gap departed from 16±2px by ${worstGap}px`);
-          const drift = Math.max(...visibleSamples.map((item) => Math.abs(item.rowBottom - final.rowBottom)));
-          check(drift <= 2, `underfilled tail moved ${drift}px while older history loaded`);
-          reports.push({ name, drift, worstGap, reads: reads.length, messageStart, samples });
+          if (completesHistory) {
+            const first = host.querySelector<HTMLElement>(`[data-session-pane="${id}"] .thread-content > .message-row`)!;
+            check(first.getBoundingClientRect().top <= 100, "exhausted short conversation lost ordinary top alignment");
+            reports.push({ name, reads: reads.length, messageStart, samples });
+          } else {
+            const worstGap = Math.max(...visibleSamples.map((item) => Math.abs(item.gap - 16)));
+            check(worstGap <= 2, `dock-to-answer gap departed from 16±2px by ${worstGap}px`);
+            const drift = Math.max(...visibleSamples.map((item) => Math.abs(item.rowBottom - final.rowBottom)));
+            check(drift <= 2, `underfilled tail moved ${drift}px while older history loaded`);
+            reports.push({ name, drift, worstGap, reads: reads.length, messageStart, samples });
+          }
         } else {
           const first = host.querySelector<HTMLElement>(`[data-session-pane="${id}"] .thread-content > .message-row`)!;
           check(first.getBoundingClientRect().top <= 100, "complete short conversation lost ordinary top alignment");
