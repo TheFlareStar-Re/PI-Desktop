@@ -1,4 +1,3 @@
-import { readStoreSourceSync } from "./helpers/source-contracts.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -103,11 +102,12 @@ test("the host no longer offers Files or Browser as built-in tools", () => {
 });
 
 test("Review opens only from an explicit user action", () => {
-  // The New launcher row and the viewport-fixed toggle are the only ways in,
-  // so a workspace edit can no longer reveal or activate Review by itself.
-  const storeSource = readStoreSourceSync();
-  assert.doesNotMatch(storeSource, /shouldOpenReviewArtifact/);
-  assert.doesNotMatch(storeSource, /toolWorkPanelTab\("review"\)/);
+  // A workspace edit cannot open Review by itself; an explicit turn-file
+  // selection can navigate there alongside the launcher and viewport toggle.
+  const eventsSource = read("src/stores/slices/events-slice.ts");
+  const workPanelSource = read("src/stores/slices/work-panel-slice.ts");
+  assert.doesNotMatch(eventsSource, /shouldOpenReviewArtifact|toolWorkPanelTab\("review"\)/);
+  assert.match(workPanelSource, /openTurnFileReview:[\s\S]*toolWorkPanelTab\("review"\)/);
   assert.match(panelSource, /toolWorkPanelTab\("review"\)/);
 });
 

@@ -9,6 +9,7 @@ const { summarizeTurnFileChanges } = await import(
   "../src/lib/turn-file-summary.ts"
 );
 const { createWorkPanelSlice } = await import("../src/stores/slices/work-panel-slice.ts");
+const { subagentWorkPanelTab } = await import("../src/lib/work-panel-tabs.ts");
 const { transcriptViewMessages } = await import("../src/lib/transcript-reading.ts");
 const { createTranscriptSlice } = await import("../src/stores/slices/transcript-slice.ts");
 const { createTranscriptReadingRuntime } = await import("../src/stores/runtime/transcript-reading-runtime.ts");
@@ -536,12 +537,15 @@ test("review navigation rejects stale sessions, pending selection and unrelated 
 
 test("explicit file review leaves the subagent detail surface", () => {
   const messages = [workspaceEdit("edit", "snapshot", "src/a.ts")];
+  const subagentTab = subagentWorkPanelTab("delegate");
   const store = reviewStore(messages, {
-    subagentPanel: { sessionId: "session-a", delegationId: "delegate" },
+    workPanelOpen: true,
+    workPanelTabs: [subagentTab],
+    activeWorkPanelTabId: subagentTab.id,
   });
   store.actions.openTurnFileReview(selectedFile(turnEntries(messages)[0]));
-  assert.equal(store.get().subagentPanel, null);
   assert.equal(store.get().activeWorkPanelTabId, "review");
+  assert.ok(store.get().workPanelTabs.some((tab) => tab.id === subagentTab.id));
 });
 
 function rollbackReadingStore(viewMessages) {
