@@ -33,6 +33,7 @@ import { readWindowState, writeWindowState } from "../window-preferences";
 import { suppressLinuxFramelessSystemMenu } from "../frameless-system-menu";
 import { recoverRendererAfterGone } from "../renderer-recovery";
 import { windowsIconPath } from "../windows-icon";
+import { setWindowsWindowAppDetails } from "../windows-app-identity";
 
 export type WindowLifecycleState = {
   mainWindow: BrowserWindow | null;
@@ -194,6 +195,7 @@ export async function createWindow({
     },
   });
   const window = windowState.mainWindow;
+  setWindowsWindowAppDetails(window);
   suppressLinuxFramelessSystemMenu(window);
   const initialBounds = window.getBounds();
   windowState.workPanelBaseBounds = restoredBounds

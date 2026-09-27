@@ -1803,7 +1803,8 @@ export const ptBR = {
       back: "Voltar aos arquivos",
       reveal: "Revelar no Finder",
       binary: "Arquivo binário — pré-visualização indisponível",
-      tooLarge: "O arquivo é grande demais para pré-visualização"
+      tooLarge: "O arquivo é grande demais para pré-visualização",
+      openFailed: "Não foi possível abrir o arquivo com o aplicativo padrão."
     }
   },
   palette: {

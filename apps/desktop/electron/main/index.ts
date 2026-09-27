@@ -11,7 +11,6 @@ import {
 } from "./network-proxy";
 import { installInsecureEndpointNotice } from "./network-notice";
 import {
-  APP_ID,
   APP_NAME,
   APP_VERSION,
   IPC,
@@ -71,6 +70,7 @@ import { createWorkPanelRuntime } from "./bootstrap/work-panel";
 import { createCloseBehaviorRuntime } from "./bootstrap/close-behavior";
 import { registerShutdownHandlers } from "./bootstrap/shutdown";
 import { stripWinLongPrefix } from "./path-utils";
+import { windowsAppUserModelId } from "./windows-app-identity";
 
 // A closed stdout/stderr (Linux AppImage, GUI launch without a TTY) must not
 // surface as Electron's "Uncaught Exception: write EPIPE" dialog. The same
@@ -85,7 +85,7 @@ const isDevelopmentBuild =
 app.setName(APP_NAME);
 applyDevelopmentUserData(app, isDevelopmentBuild);
 if (process.platform === "win32") {
-  app.setAppUserModelId(APP_ID);
+  app.setAppUserModelId(windowsAppUserModelId());
 }
 
 // Chromium's accessibility tree serializer has a known CHECK failure in

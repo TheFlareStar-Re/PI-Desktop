@@ -6,6 +6,7 @@ import { isNetUrlAllowed, THEME_ASSET_SCHEME } from "@pi-desktop/plugin-sdk";
 import { builtinWindowBackground } from "@pi-desktop/shared";
 import { suppressLinuxFramelessSystemMenu } from "./frameless-system-menu";
 import { windowsIconPath } from "./windows-icon";
+import { setWindowsWindowAppDetails } from "./windows-app-identity";
 import { PanelSenders, pageGoneWithin, resolvePanelInvocation } from "./plugin-panel-senders";
 import {
   isPluginPanelWindowControlAction,
@@ -499,6 +500,7 @@ export class PluginPanelHost {
         ],
       },
     });
+    if (!widget) setWindowsWindowAppDetails(win);
     // A panel owns its visible surface; do not add a native application menu
     // to the window around the plugin's own UI.
     win.setMenu(null);

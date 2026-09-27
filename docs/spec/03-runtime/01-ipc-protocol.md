@@ -875,10 +875,15 @@ and a shown notification restores/shows and focuses the window before emitting
 task notification contract. Native delivery is best-effort; the durable
 inbox remains authoritative when the OS suppresses a banner. On Windows,
 Electron Main registers `net.aiuo.pi-desktop` as the process AppUserModelID
-before readiness and before any window is created. The ID matches the NSIS
+before readiness and before any window is created in packaged builds.
+Development launches use `net.aiuo.pi-desktop.dev` so a shortcut created for
+`electron.exe` cannot claim the packaged application's identity. Each
+taskbar-visible Windows window also supplies its AppUserModelID, relaunch
+command, display name, and icon explicitly. The packaged ID matches the NSIS
 package identity so notification attribution, notification settings, taskbar
 grouping, and installed shortcuts resolve to `PI-Desktop`, never the stock
-Electron host.
+Electron host. Legacy portable runs use `PORTABLE_EXECUTABLE_FILE` for relaunch
+and its pinned icon so the shortcut does not point into a temporary extraction.
 
 Task native objects are retained by durable notification id, with at most one
 live object per id. Replayed `showNative` requests do not create a second
@@ -1778,8 +1783,12 @@ Renderer IPC kept for the Plan-safe preview facade and URL fallback:
   containment as `fs/read`. Never returns non-image bytes. Renderer-only;
   not a plugin host API.
 - `fs/reveal({path})` → reveal in Finder. Same containment as `fs/read`.
-- `fs/open({path})` → open with the OS default application. Same lexical
-  containment as `fs/read` (without the extra realpath step used by reads).
+- `fs/open({path, mimeType?})` → open an existing regular file with the OS
+  default application. It uses the same realpath containment as `fs/read`,
+  including rejection of symlink escapes. For a content-addressed
+  `attachments/<sha256>` blob declared as `video/mp4`, the host creates a
+  `.mp4` symlink inside its private app-data directory before the OS handoff,
+  so the extensionless blob has a media association without copying its bytes.
 - `fs/resolveRef({ref, sessionId?})` → `FsChatRefResolveResult`
   (`{ match: FsChatRefMatch | null }`, the match naming the answering `root`
   (`workspace` / `scratch` / `attachments`), the `relativePath` relative to that
