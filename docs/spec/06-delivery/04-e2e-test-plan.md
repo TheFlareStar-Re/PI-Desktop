@@ -3766,13 +3766,19 @@ identify the platform validation still needed.
 #### E2E-059: Embedded browser preview isolation and overlays
 
 - **Preconditions**: A local dev server is running; a URL or BrowserPreview artifact exists.
-- **Steps**: 1) Activate the artifact, enter `localhost:<port>` without a scheme, and submit.
+- **Steps**: 1) Activate the artifact, enter `localhost:<port>` and
+  `localhost:<port>/index.html` without a scheme, and submit each. Enter a
+  dotted host with a port (for example, `example.com:8080`), then verify an
+  explicit HTTP(S) URL and a rejected `javascript:` URL.
   2) Navigate site links; use back/forward/reload/stop. 3) Trigger a
   `window.open` popup and a permission-requesting page (e.g. notification
   prompt). 4) Open global search, then rename a session from the left sidebar;
   close it and open Settings. Return to chat
   and trigger an inline tool permission card. 5) Switch to another panel tab
-  and back; close the panel. 6) Use open-external.
+  and back; close the panel. 6) Use open-external. 7) From both an existing page
+  and a blank Browser tab, enter an existing HTML file inside the workspace by
+  `file:` URL and absolute path. Then enter both `file:///tmp/demo.html` and
+  `/tmp/demo.html`, pointing to an existing file outside the workspace.
 - **Expected**: Scheme-less input normalizes to http; nav state (URL bar,
   back/forward enablement, load spinner) mirrors the page. Popups open in
   the default browser (never in-app) only when the URL parses as http(s) or
@@ -3787,7 +3793,10 @@ identify the platform validation still needed.
   its full surface rect and the plugin body does not shift down.
   Open-external launches an http(s) page in the default browser and an in-root
   file preview via `openPath`. The view uses an isolated persist partition
-  (no session bleed from the app shell).
+  (no session bleed from the app shell). Both in-root forms open; neither
+  outside form reaches the guest load, the submitted address remains visible,
+  and the browser explains in the active locale that only existing workspace
+  files can open.
 - **Specs linked**: `03-runtime/01-ipc-protocol.md` §13a, ADR 0019, ADR 0168
 - **Acceptance**: Quality, Security
 - **Milestone**: M5
@@ -8688,6 +8697,7 @@ must keep splitting are covered by `markdown-blocks.test.mjs`.
 | Quality (Independent session communication) | E2E-SESSION-independent-top-level-communication, E2E-SESSION-hover-card-model-and-links |
 | C — Conversation & stream (Hover card model and links) | E2E-SESSION-hover-card-model-and-links |
 | C — Conversation & stream (Chat file references) | E2E-CHAT-shorthand-file-ref-opens-the-matching-file, E2E-CHAT-file-ref-opens-the-surface-that-owns-it |
+| C / Quality / Security (Conversation MP4 attachments) | E2E-CHAT-mp4-attachment-opens-in-system-player |
 | G — Plugins (Chat file references) | E2E-CHAT-file-ref-opens-the-surface-that-owns-it, E2E-PLUGIN-file-view-collapse-persists |
 | Quality (Chat file references) | E2E-CHAT-shorthand-file-ref-opens-the-matching-file, E2E-CHAT-file-ref-opens-the-surface-that-owns-it, E2E-PLUGIN-file-view-collapse-persists |
 | G — Plugins (project folder roots) | E2E-PLUGIN-file-view-switches-folder-per-project |
@@ -8723,6 +8733,7 @@ must keep splitting are covered by `markdown-blocks.test.mjs`.
 | M6+ (Windows updater cache) | E2E-260 |
 | M6+ (Independent session communication) | E2E-SESSION-independent-top-level-communication, E2E-SESSION-hover-card-model-and-links |
 | M5 (Chat file references) | E2E-CHAT-shorthand-file-ref-opens-the-matching-file, E2E-CHAT-file-ref-opens-the-surface-that-owns-it |
+| M5 (Conversation MP4 attachments) | E2E-CHAT-mp4-attachment-opens-in-system-player |
 | M6+ (Chat file references) | E2E-PLUGIN-file-view-collapse-persists |
 | M6+ (project folder roots) | E2E-PLUGIN-file-view-switches-folder-per-project |
 | Post-MVP | E2E-022A, E2E-022B, E2E-022C, E2E-024I, E2E-024J, E2E-024K, E2E-024L, E2E-024M (plugin roadmap R2/R3/R6) |
@@ -11855,6 +11866,26 @@ are withdrawn with ADR 0165.
   `apps/desktop/test/tool-row-file-refs.test.mjs` for the work-panel entry each
   shape of resolution produces); full UI journey Draft (run only in a capable
   environment when this surface changes)
+
+#### E2E-CHAT-mp4-attachment-opens-in-system-player
+
+- **Preconditions**: A conversation has one pasted MP4 in session scratch and
+  two stored MP4 attachments whose content-addressed refs have no extension:
+  one larger than 512 KiB and one smaller binary file. All retain `video/mp4`
+  metadata.
+- **Steps**: Click each attachment in the transcript, then choose **Open with
+  default application** in the host file tab. Repeat with a workspace `.mp4`.
+- **Expected**: The large attachment reports that inline preview is unavailable
+  because of size and the small attachment reports binary content; both offer
+  the OS-open action. The host validates realpath containment and hands the OS
+  an `.mp4` alias of the same stored bytes. A file outside allowed roots or a
+  symlink escape is refused. Failed OS handoff is visible to the user.
+- **Specs linked**: `03-runtime/01-ipc-protocol.md` § fs,
+  `04-ux/09-interaction-patterns.md` §8a.2.
+- **Acceptance**: C (conversation & stream), Quality, Security
+- **Milestone**: M5
+- **Status**: Electron fixture covered for pasted scratch MP4 and both blob sizes
+  (`test:e2e:composer-paste`); full installed-app/player journey Draft.
 
 #### E2E-181: An imported skill is listed in the next session catalog
 
