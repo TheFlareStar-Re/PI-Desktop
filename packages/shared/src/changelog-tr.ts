@@ -2,14 +2,59 @@ import type { ChangelogEntry } from "./changelog.js";
 
 export const trEntries: ChangelogEntry[] = [
   {
+    "version": "0.15.8",
+    "date": "2026-09-26",
+    "highlights": [
+      "Yapay zekâ model ayarlarını servis seçici, önerilen model seçimi ve özel uç noktalar için daha anlaşılır yönlendirmeyle yeniler.",
+      "Özel uç noktalar, model meta verilerini, yeteneklerini ve API biçimlerini tamamlamak için PI-Desktop'ın sunduğu yayıncıları kullanır.",
+      "Google Gemini istekleri yeniden güvenilir şekilde çalışır, sağlayıcı üstbilgileri korunur ve sağlayıcı silinince artık görüntü oluşturma varsayılanları temizlenir.",
+      "Alt ajan çalışma paneli kartları genişliğe uyum sağlar; devam ettirilen alt ajanlar kendi model bağını ve güncel yetkilendirme izinlerini korur.",
+      "Güvenilir uzantıların iptal ve yaşam döngüsü kapatması güçlendirilerek geç güncellemeler, kuyruk istemleri ve alt süreçler güvenle sonlandırılır.",
+      "Barındırılan web aramasının yeniden oynatılması ve yeniden başlatma kurtarması iyileştirilir; OpenAI Codex OAuth modelleri yerel aramayı isteğe bağlı açabilir.",
+      "Sohbette Markdown tablolarını kopyalayın, CSV olarak indirin veya genişletin; tanınan dosyaları açın ya da tam ve göreli yollarını kopyalayın.",
+      "Composer akıl yürütme kontrolleri, oluşturulan görsellere göz atma, Windows okunmamış görev rozetleri ve yerelleştirilmiş ses ayarları iyileştirilir.",
+    ],
+  },
+
+  {
+    "version": "0.15.7",
+    "date": "2026-09-25",
+    "highlights": [
+      "İlk açılışta tam ekran ay animasyonu sunan, Ayarlar'dan yeniden oynatılabilen süreli bir Sonbahar Ortası Festivali sürümünü kutlayın.",
+      "Composer'da isteğe bağlı yerel ses girişini kullanın; geliştiriciye özel denetimler, doğrulanabilir ve iptal edilebilir model indirmeleri ve eski transkripsiyon sonuçlarına karşı koruma içerir.",
+      "Kurulum ve ZIP sürümlerine ek olarak tek çalıştırılabilir dosyalı taşınabilir Windows sürümü sunulur.",
+      "Daha güvenli iptal ve kurtarma, daha dayanıklı model katalogları, oluşturulan görüntü gruplarında daha iyi gezinme ve daha duyarlı iş paneliyle Agent kararlılığı geliştirildi.",
+    ],
+  },
+
+  {
+    "version": "0.15.6",
+    "date": "2026-09-23",
+    "highlights": [
+      "Kayıtlı bağlantı ayarlarını değiştirmeden mevcut DeepSeek, xAI ve OpenAI hizmetlerinde yerel aramayı etkinleştirin.",
+      "OpenAI ve ChatGPT/Codex model kataloglarında GPT-6 Astra, Sol ve Luna desteği eklenir.",
+    ],
+  },
+
+  {
+    "version": "0.15.5",
+    "date": "2026-09-23",
+    "highlights": [
+      "OpenAI ve ChatGPT/Codex model kataloglarında GPT-6 Astra, Sol ve Luna desteği eklenir.",
+    ],
+  },
+
+  {
     "version": "0.15.2",
     "date": "2026-09-21",
     "highlights": [
+      "Sohbette görsel oluşturun ve düzenleyin; tek bir görsel modeli ve yerleşik imagegen becerisiyle toplu üretim yapın.",
       "Araç etkinlikleri konuşma genişliğini izler ve uzun etkinlik etiketleri düzgünce sığdırılır.",
       "Oturum değiştirdikten sonra yapıştırma tamamlansa bile yapıştırılan dosya ekleri korunur.",
       "Sağlayıcıları düzenlerken seçili varsayılan model korunur; model kaldırılırsa güvenli bir yedek kullanılır.",
       "İç içe düşünme ve araç etkinliği bölümlerini okumak, gezinmek ve kurtarmak kolaylaşır.",
       "Composer düzenleri, akıl yürütme kontrolleri ve çalışma alanı tema tutarlılığı iyileştirilir.",
+      "Ayarlara, ağ ve geçici sağlayıcı hatalarını başarılı olana kadar yeniden deneyen isteğe bağlı bir anahtar ekler.",
     ],
   },
 

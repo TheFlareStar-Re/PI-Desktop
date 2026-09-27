@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::{atomic::AtomicBool, Arc};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -9,7 +10,7 @@ use crate::permissions::PermissionManager;
 use crate::plans::PlanManager;
 use crate::plugins::PluginManager;
 use crate::secrets::SecretStore;
-use crate::tool_budget::ToolBudget;
+use crate::tool_budget::{ToolBudget, WorkspaceMutationLocks};
 use crate::user_skills::UserSkillRegistry;
 use crate::user_subagents::UserSubagentRegistry;
 use crate::workspace::WorkspaceState;
@@ -38,6 +39,12 @@ pub struct AppState {
     /// Subagent definitions the user owns, alongside the builtin and per-project
     /// ones the runtime discovers itself (D202).
     pub user_subagents: UserSubagentRegistry,
+    /// One reconciliation worker per local vault. The lock is separate from
+    /// the AppState mutex so WebDAV I/O never monopolizes the host state lock.
+    pub config_sync_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Process-local status for the single active sync worker. It is never
+    /// persisted and only drives the renderer's transient "syncing" state.
+    pub config_sync_in_progress: Arc<AtomicBool>,
     pub started_at: Instant,
     pub handshook: bool,
     pub shutting_down: bool,
@@ -52,6 +59,7 @@ pub struct AppState {
     pub plugin_batch_import_rates: HashMap<String, Vec<Instant>>,
     pub plugin_delete_rates: HashMap<String, Vec<Instant>>,
     pub tool_budget: ToolBudget,
+    pub workspace_mutation_locks: WorkspaceMutationLocks,
     /// (session_id, tool_call_id) -> cancellation signal for an active Bash
     /// process. The signal is removed by the execution owner in all outcomes.
     pub active_bash_cancellations: HashMap<(String, String), tokio::sync::watch::Sender<bool>>,
@@ -100,6 +108,9 @@ impl AppState {
         // applies on launch instead of only after a manual refresh.
         let app_settings = db.get_setting("app").unwrap_or_default();
         crate::network_proxy::apply_from_settings(app_settings.as_ref());
+        // The WebDAV transport reads this before it allows a plaintext hop, so
+        // it has to be in place on launch and not only after a settings write.
+        crate::network_policy::apply_from_settings(app_settings.as_ref());
         let (channel, custom_url) =
             crate::plugins::market_channel_from_settings(app_settings.as_ref());
         let plugins = PluginManager::new(data_dir, channel, custom_url);
@@ -125,6 +136,8 @@ impl AppState {
             mcp_servers,
             user_skills,
             user_subagents,
+            config_sync_lock: Arc::new(tokio::sync::Mutex::new(())),
+            config_sync_in_progress: Arc::new(AtomicBool::new(false)),
             started_at: Instant::now(),
             handshook: false,
             shutting_down: false,
@@ -134,6 +147,7 @@ impl AppState {
             plugin_batch_import_rates: HashMap::new(),
             plugin_delete_rates: HashMap::new(),
             tool_budget: ToolBudget::new(),
+            workspace_mutation_locks: WorkspaceMutationLocks::default(),
             active_bash_cancellations: HashMap::new(),
             pending_permissions: HashMap::new(),
             pending_bash_aborts: HashMap::new(),

@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import type {
   AgentActivity,
   ContextCompactionMark,
+  UiMessage,
 } from "@pi-desktop/shared";
 import { formatCompactTokenCount } from "@pi-desktop/shared";
 import {
@@ -16,8 +17,8 @@ import {
   assistantTurnResponseDuration,
   assistantTurnResponseOutputTokens,
   assistantTurnUsage,
+  assistantTurnOwnedToolsEqual,
   reuseReadonlyMap,
-  subagentRunsEqual,
   type AssistantTurnEntry,
   type AssistantTurnPart,
   type TranscriptEntry,
@@ -31,7 +32,9 @@ import {
   projectTurnProcess,
   resolveThinkingDisplayMode,
   shouldGroupTurnProcess,
+  turnProcessTiming,
 } from "../../../lib/turn-process";
+import { formatMessageTimestamp } from "../../../lib/message-timestamp";
 import { useAppStore } from "../../../stores/app-store";
 import { Markdown } from "../../../components/Markdown";
 import { IconBranch, IconReview } from "../../../components/icons";
@@ -42,16 +45,20 @@ import {
   MessageMeta,
 } from "./shared";
 import { activityItemsEqual, ActivityGroup } from "./ActivityGroup";
+import { GeneratedImages } from "./GeneratedImages";
 import { MessageRow } from "./MessageRow";
 import { assistantTurnMenuItems } from "./menu-items";
 import {
   useChatTextActions,
   useTranscriptMenu,
 } from "./TranscriptMenu";
+import { TurnFileSummary } from "./TurnFileSummary";
+import { useSmoothText } from "../../../hooks/useSmoothText";
 import { TurnProcess } from "./TurnProcess";
 
 type AssistantTurnProps = {
   entry: AssistantTurnEntry;
+  sessionId: string | undefined;
   isActive: boolean;
   runtimeActivity?: AgentActivity;
 };
@@ -61,9 +68,15 @@ function assistantTurnPropsEqual(
   next: AssistantTurnProps,
 ) {
   if (
+    previous.sessionId !== next.sessionId ||
     previous.isActive !== next.isActive ||
     previous.runtimeActivity !== next.runtimeActivity ||
+    previous.entry.startedAt !== next.entry.startedAt ||
     previous.entry.anchorId !== next.entry.anchorId ||
+    !assistantTurnOwnedToolsEqual(
+      previous.entry.ownedToolMessages,
+      next.entry.ownedToolMessages,
+    ) ||
     previous.entry.parts.length !== next.entry.parts.length
   ) {
     return false;
@@ -72,6 +85,9 @@ function assistantTurnPropsEqual(
     const nextPart = next.entry.parts[index];
     if (part.kind !== nextPart.kind) return false;
     if (part.kind === "message" && nextPart.kind === "message") {
+      return part.message === nextPart.message;
+    }
+    if (part.kind === "steering" && nextPart.kind === "steering") {
       return part.message === nextPart.message;
     }
     if (part.kind === "activity" && nextPart.kind === "activity") {
@@ -116,8 +132,8 @@ export function transcriptEntryEqual(
   }
   if (previous.kind === "assistant-turn" && next.kind === "assistant-turn") {
     return assistantTurnPropsEqual(
-      { entry: previous, isActive: false },
-      { entry: next, isActive: false },
+      { entry: previous, sessionId: undefined, isActive: false },
+      { entry: next, sessionId: undefined, isActive: false },
     );
   }
   return false;
@@ -125,11 +141,13 @@ export function transcriptEntryEqual(
 
 export function TranscriptEntryView({
   entry,
+  sessionId,
   isRunning,
   isActive,
   runtimeActivity,
 }: {
   entry: TranscriptEntry;
+  sessionId: string | undefined;
   isRunning: boolean;
   isActive: boolean;
   runtimeActivity?: AgentActivity;
@@ -138,6 +156,7 @@ export function TranscriptEntryView({
     return (
       <AssistantTurn
         entry={entry}
+        sessionId={sessionId}
         isActive={isActive}
         runtimeActivity={runtimeActivity}
       />
@@ -157,6 +176,7 @@ function transcriptEntryKey(entry: TranscriptEntry): string {
 
 type TranscriptHistoryProps = {
   entries: TranscriptEntry[];
+  sessionId: string | undefined;
   isRunning: boolean;
 };
 
@@ -167,6 +187,7 @@ type TranscriptHistoryProps = {
  */
 export const TranscriptHistory = memo(function TranscriptHistory({
   entries,
+  sessionId,
   isRunning,
 }: TranscriptHistoryProps) {
   return (
@@ -174,6 +195,7 @@ export const TranscriptHistory = memo(function TranscriptHistory({
       {entries.map((entry) => (
         <TranscriptEntryView
           key={transcriptEntryKey(entry)}
+          sessionId={sessionId}
           entry={entry}
           isRunning={isRunning}
           isActive={false}
@@ -183,6 +205,7 @@ export const TranscriptHistory = memo(function TranscriptHistory({
   );
 }, (previous, next) => {
   if (
+    previous.sessionId !== next.sessionId ||
     previous.isRunning !== next.isRunning ||
     previous.entries.length !== next.entries.length
   ) {
@@ -195,17 +218,20 @@ export const TranscriptHistory = memo(function TranscriptHistory({
 
 export const TranscriptTail = memo(function TranscriptTail({
   entry,
+  sessionId,
   isRunning,
   isActive,
   runtimeActivity,
 }: {
   entry: TranscriptEntry;
+  sessionId: string | undefined;
   isRunning: boolean;
   isActive: boolean;
   runtimeActivity?: AgentActivity;
 }) {
   return (
     <TranscriptEntryView
+      sessionId={sessionId}
       entry={entry}
       isRunning={isRunning}
       isActive={isActive}
@@ -213,18 +239,61 @@ export const TranscriptTail = memo(function TranscriptTail({
     />
   );
 }, (previous, next) =>
+  previous.sessionId === next.sessionId &&
   previous.isRunning === next.isRunning &&
   previous.isActive === next.isActive &&
   previous.runtimeActivity === next.runtimeActivity &&
   transcriptEntryEqual(previous.entry, next.entry)
 );
 
+/** Message bubble that optionally applies smooth text release. */
+const SmoothMessageBubble = memo(function SmoothMessageBubble({
+  message,
+  streaming,
+}: {
+  message: UiMessage;
+  streaming: boolean;
+}) {
+  const smoothStreaming = useAppStore(
+    (s) => s.settings?.smoothStreaming !== false,
+  );
+  const prefersReducedMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const enabled = smoothStreaming && !prefersReducedMotion;
+  const displayContent = useSmoothText(
+    message.content || "",
+    streaming,
+    enabled,
+  );
+  const showCursor = streaming && enabled && (displayContent.length < (message.content || "").length);
+
+  return (
+    <div
+      className={`message-bubble assistant-turn-fragment${
+        streaming ? " streaming" : ""
+      }${showCursor ? " smooth-cursor" : ""}`}
+      data-message-id={message.id}
+    >
+      {displayContent ? (
+        <div className="prose-chat">
+          <Markdown source={displayContent} />
+        </div>
+      ) : null}
+      {message.error ? (
+        <AssistantErrorMessage message={message} />
+      ) : null}
+    </div>
+  );
+});
+
 export const AssistantTurn = memo(function AssistantTurn({
   entry,
+  sessionId,
   isActive,
   runtimeActivity,
 }: AssistantTurnProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const openTranscriptMenu = useTranscriptMenu();
   const { copyText, selectText } = useChatTextActions();
   const retryAssistantMessage = useAppStore((s) => s.retryAssistantMessage);
@@ -255,6 +324,16 @@ export const AssistantTurn = memo(function AssistantTurn({
     !isActive && !hasError && Boolean(content) && Boolean(actionMessage);
   const streaming =
     isActive && messages.some((message) => message.status === "streaming");
+  const processTiming = useMemo(
+    () => turnProcessTiming(entry.parts, entry.startedAt),
+    [entry.parts, entry.startedAt],
+  );
+  const completedTimestamp = isActive
+    ? undefined
+    : formatMessageTimestamp(
+        processTiming.endedAt,
+        i18n.resolvedLanguage ?? i18n.language,
+      );
   /*
     The turn owns the menu for its whole subtree, the answer rows it renders
     included: Regenerate and Branch act on the turn's answer message, so a menu
@@ -324,39 +403,40 @@ export const AssistantTurn = memo(function AssistantTurn({
   const { process, responses } = projectTurnProcess(entry);
   const activePart = isActive ? entry.parts.at(-1) : undefined;
 
-  const renderPart = (part: AssistantTurnPart) =>
-    part.kind === "activity" ? (
-      <ActivityGroup
-        embedded
-        key={`activity-${part.items[0].message.id}-${part.items[0].kind}${part.items[0].kind === "hostedSearch" ? `-${part.items[0].round.id}` : ""}`}
-        items={part.items}
-        endedAt={part.endedAt}
-        isActive={part === activePart}
-        isLast={isLastActivityPart(entry.parts, part)}
-        runtimeActivity={part === activePart ? runtimeActivity : undefined}
-        turnDelegationStatuses={turnDelegationStatuses}
-        turnDelegationTimings={turnDelegationTimings}
-      />
-    ) : (
-      <div
-        className={`message-bubble assistant-turn-fragment${
-          isActive && part.message.status === "streaming"
-            ? " streaming"
-            : ""
-        }`}
-        data-message-id={part.message.id}
+  const renderPart = (part: AssistantTurnPart) => {
+    if (part.kind === "activity") {
+      return (
+        <ActivityGroup
+          embedded
+          key={`activity-${part.items[0].message.id}-${part.items[0].kind}${part.items[0].kind === "hostedSearch" ? `-${part.items[0].round.id}` : ""}`}
+          items={part.items}
+          endedAt={part.endedAt}
+          isActive={part === activePart}
+          isLast={isLastActivityPart(entry.parts, part)}
+          runtimeActivity={part === activePart ? runtimeActivity : undefined}
+          turnDelegationStatuses={turnDelegationStatuses}
+          turnDelegationTimings={turnDelegationTimings}
+        />
+      );
+    }
+    if (part.kind === "steering") {
+      return (
+        <MessageRow
+          embedded
+          key={part.message.id}
+          message={part.message}
+          isRunning={isActive}
+        />
+      );
+    }
+    return (
+      <SmoothMessageBubble
         key={part.message.id}
-      >
-        {part.message.content ? (
-          <div className="prose-chat">
-            <Markdown source={part.message.content} />
-          </div>
-        ) : null}
-        {part.message.error ? (
-          <AssistantErrorMessage message={part.message} />
-        ) : null}
-      </div>
+        message={part.message}
+        streaming={isActive && part.message.status === "streaming"}
+      />
     );
+  };
 
   return (
     <div
@@ -370,7 +450,14 @@ export const AssistantTurn = memo(function AssistantTurn({
       <div className="message-col">
         {groupProcess ? (
           <>
-            <TurnProcess turnId={entry.id} processParts={process} turnParts={entry.parts} isActive={isActive} delegationStatuses={turnDelegationStatuses}>
+            <TurnProcess
+              turnId={entry.id}
+              processParts={process}
+              turnParts={entry.parts}
+              timing={processTiming}
+              isActive={isActive}
+              delegationStatuses={turnDelegationStatuses}
+            >
               {process.map(renderPart)}
             </TurnProcess>
             {responses.map(renderPart)}
@@ -378,6 +465,15 @@ export const AssistantTurn = memo(function AssistantTurn({
         ) : (
           entry.parts.map(renderPart)
         )}
+        {turnAllActivityItems
+          .filter(
+            (item) =>
+              item.kind === "tool" && item.message.toolName === "GenerateImages",
+          )
+          .map((item) => (
+            <GeneratedImages key={item.message.id} message={item.message} />
+          ))}
+        {!isActive ? <TurnFileSummary entry={entry} sessionId={sessionId} /> : null}
         {!isActive && metaMessage ? (
           <MessageMeta
             modelId={modelId}
@@ -388,6 +484,11 @@ export const AssistantTurn = memo(function AssistantTurn({
         ) : null}
         {complete && actionMessage ? (
           <div className="message-actions">
+            {completedTimestamp ? (
+              <time className="message-timestamp" dateTime={completedTimestamp.dateTime}>
+                {completedTimestamp.label}
+              </time>
+            ) : null}
             <CopyButton text={content} label={t("chat.copy")} />
             <TooltipButton
               className="copy-btn icon"
@@ -417,14 +518,14 @@ export const AssistantTurn = memo(function AssistantTurn({
  * turn item: a divider that says the earlier turns above it are now a summary.
  * It carries no actions — nothing about a persisted checkpoint is undoable.
  */
-export function CompactionRow({ mark }: { mark: ContextCompactionMark }) {
+export function CompactionRow({ mark }: { mark: ContextCompactionMark & { summary?: string } }) {
   const { t } = useTranslation();
   return (
     <div className="transcript-compaction-row" role="separator">
       <span className="transcript-compaction-label">
         {t("chat.compactionRow", { times: mark.generation })}
       </span>
-      <span className="transcript-compaction-detail">
+      <span className="transcript-compaction-detail" title={mark.summarized && !mark.fallback && mark.summary?.trim() ? mark.summary : undefined}>
         {mark.fallback
           ? t("chat.compactionRowSummaryFailed")
           : mark.summarized

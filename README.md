@@ -17,6 +17,7 @@ Local-first · Model-agnostic · Plugin-powered · macOS / Windows / Linux
 [![Stars](https://img.shields.io/github/stars/vastsa/PI-Desktop?style=flat\&label=stars)](https://github.com/vastsa/PI-Desktop/stargazers)
 [![CI](https://github.com/vastsa/PI-Desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/vastsa/PI-Desktop/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/vastsa/PI-Desktop)](LICENSE)
+[![Reddit](https://img.shields.io/badge/Reddit-r%2FAIUO-FF4500?logo=reddit\&logoColor=white)](https://www.reddit.com/r/AIUO/)
 
 <br />
 
@@ -149,6 +150,17 @@ Extend the runtime
 **MCP Servers**
 **Resident Services**
 **Plugin Message Bus**
+
+Chat messages show their local date and time. A task's process expands while it
+runs and folds after completion, leaving the final answer visible; expand the
+elapsed-time row to revisit the work. Supplemental input sent with Alt+Enter
+(steering) stays inside the same process. The queue's **Send now** action instead
+ends the active turn at its next boundary and starts a new one; those turns stay
+separate. Recorded workspace Write/Edit and captured shell changes appear below
+the answer with a separate count/totals header and a spaced file list.
+Click a file to review its expanded diffs and guarded rollback in the right
+sidebar. Counts remain cumulative edits from loaded parent-session evidence,
+not a net Git diff.
 
 </td>
 
@@ -573,7 +585,7 @@ Agent / Plan / Goal
 | -------- | ------------- | --------------------------------------- |
 | macOS    | Apple Silicon | `.dmg` / `.zip`                         |
 | macOS    | Intel         | `.dmg` / `.zip`                         |
-| Windows  | x64           | Installer / Portable                    |
+| Windows  | x64           | Installer / `.zip`                      |
 | Linux    | x64           | `.AppImage` / `.deb` / `.rpm` / `.asar` |
 
 macOS releases are signed with a Developer ID certificate and notarized by Apple.

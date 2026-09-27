@@ -20,6 +20,8 @@ import { useTranscriptScroll } from "./hooks/useTranscriptScroll";
 import type { TranscriptSearchTarget } from "../../../lib/transcript-reading";
 import { TranscriptSearchContext } from "../../../lib/transcript-search-context";
 import { DisclosureAnchorContext } from "../../../lib/disclosure-anchor-context";
+import { api } from "../../../lib/api";
+import { mergeLiveSessionMessages } from "../../../lib/session-transcript";
 import { conversationPlainText } from "../../../lib/chat-transcript-text";
 import {
   TranscriptMenuProvider,
@@ -89,6 +91,7 @@ function TranscriptBody({
   const { t } = useTranslation();
   const openTranscriptMenu = useTranscriptMenu();
   const { copyText, selectText } = useChatTextActions();
+  const showToast = useAppStore((state) => state.showToast);
   const transcriptRunning = isRunning && !readingWindow;
   const latestTurnResult = useAppStore((state) =>
     sessionId ? state.latestTurnResults[sessionId] : undefined,
@@ -124,6 +127,7 @@ function TranscriptBody({
     tailEntry,
     minimapMessages,
     hasEarlierHistory,
+    alignHistoryTail,
     hydrationBounded,
     veilCovering,
     veilPhase,
@@ -180,15 +184,30 @@ function TranscriptBody({
     conversation rather than one message, so it is the only surface that can
     copy the whole thread.
   */
+  const copyConversation = async () => {
+    if (!sessionId) return;
+    try {
+      // Explicit copy reads the full session without changing the reading window.
+      const { session } = await api.getSession(sessionId);
+      if (!session) throw new Error("Session unavailable");
+      await copyText(conversationPlainText(
+        mergeLiveSessionMessages(session.messages ?? [], messages),
+        { user: t("chat.speakerYou"), assistant: t("chat.speakerAssistant") },
+      ));
+    } catch {
+      showToast(t("chat.copyFailed"), { variant: "error" });
+    }
+  };
+
   const onContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
     openTranscriptMenu(event, {
       label: t("chat.conversationMenu"),
       items: conversationMenuItems({
         t,
-        conversation: conversationPlainText(messages, {
-          user: t("chat.speakerYou"),
-          assistant: t("chat.speakerAssistant"),
-        }),
+        canCopy: Boolean(sessionId) && (hasMoreBefore || hasMoreAfter || messages.some(
+          (message) => (message.role === "user" || message.role === "assistant") && message.content.trim(),
+        )),
+        onCopyConversation: () => void copyConversation(),
         scrollRef,
         contentRef,
         actions: { copyText, selectText },
@@ -227,6 +246,7 @@ function TranscriptBody({
         className="thread-scroll"
         ref={scrollRef}
         data-scroll-owner="transcript"
+        data-tail-aligned={alignHistoryTail || undefined}
         onContextMenu={onContextMenu}
         onScroll={handleScroll}
         role="log"
@@ -240,7 +260,7 @@ function TranscriptBody({
             aria-live="polite"
             aria-hidden={!loadingOlder}
           >
-            {loadingOlder ? t("chat.loadingEarlierMessages") : null}
+            {t("chat.loadingEarlierMessages")}
           </div>
           {hydrationBounded ? (
             // One viewport of slack, not a per-entry estimate. The spacer exists
@@ -249,10 +269,15 @@ function TranscriptBody({
             // view, which is exactly the jitter this avoids.
             <div className="transcript-hydration-spacer" aria-hidden />
           ) : null}
-          <TranscriptHistory entries={historyEntries} isRunning={isRunning} />
+          <TranscriptHistory
+            entries={historyEntries}
+            sessionId={sessionId}
+            isRunning={isRunning}
+          />
           {tailEntry ? (
             <TranscriptTail
               entry={tailEntry}
+              sessionId={sessionId}
               isRunning={isRunning}
               isActive={transcriptRunning && tailEntry.kind === "assistant-turn"}
               runtimeActivity={specializedActivity}

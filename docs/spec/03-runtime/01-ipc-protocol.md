@@ -149,7 +149,11 @@ name matches a loaded pi prompt template, the main-process handler expands
 the invocation (`parseCommandArgs` + `substituteArgs`) before persisting.
 The persisted user message stores `content = expanded text` plus an optional
 `command: string` field carrying the typed invocation for transcript
-display. Reseed replays `content`, so the agent context is identical across
+display. Explicit Skill invocations also persist validated `skillMentions`
+with UTF-16 offsets into `command`, allowing the transcript to show each
+Skill separately from the user's remaining text after reopening a session.
+These optional transcript metadata fields do not alter the model-facing
+`content`. Reseed replays `content`, so the agent context is identical across
 restarts. Builtin/plugin slash aliases never reach this channel — the
 renderer executes them locally. Unknown `/foo` passes through as literal
 content. Ordinary `@path` tokens are not transformed anywhere in the pipeline
@@ -197,13 +201,15 @@ content-addressed attachment store, and derives the effective model transport
 from the published model record plus the exact binding's `supportsImages`
 override. An absent or `null` override follows the published image capability;
 `true` enables and `false` disables image input for that configured model.
-Eligible images become transient pi-ai image blocks when the effective
-capability is enabled. Unknown/custom models without an explicit override,
-non-vision models, and images above the 10 MB inline bound receive a safe
-`@path` fallback.
-Main uses streamed hashing and file copying for images above that bound, and the
-sidecar uses the same bounded-read rule when rebuilding history. The durable
-user message stores `content` plus attachment metadata/ref, never base64.
+For a vision-capable model, images within the 10 MB per-image bound become
+transient pi-ai image blocks. Restored history also has a 30 MB aggregate raw
+image-byte budget: the sidecar considers persisted attachments newest-first and
+preserves every eligible image when the total fits. If the budget is exceeded,
+older images use the existing safe `@path` fallback. Unknown/custom models
+without an explicit image override, non-vision models, oversized images, and
+unavailable refs also use the safe fallback. Main uses streamed hashing and file
+copying for oversized images. The durable user message stores `content` plus
+attachment metadata/ref, never base64.
 Invalid attachment paths fail with `PATH_OUTSIDE_WORKSPACE`.
 
 Regenerate history (D109) also uses session channels:
@@ -215,11 +221,13 @@ Regenerate history (D109) also uses session channels:
 Root user turns may include `revisionRootId`, `revisionCount`, and
 `activeRevision`. Activating a revision replaces the live tail with
 `prefix + archived branch` and disposes the session agent.
-The sidecar receives only the prepared attachment subset needed for the
-current turn. On a vision runtime, persisted image refs are hydrated from the
-session-bound attachment/scratch roots when history is rebuilt; oversized or
-unavailable images remain path fallbacks. This keeps renderer, main, sidecar, the models.dev catalog, and host
-persistence on one capability-aware contract.
+The sidecar receives only the prepared attachment subset needed for the current
+turn. On a vision runtime, persisted refs are hydrated from session-bound
+attachment/scratch/project roots. The current prompt row is excluded by message
+id before hydration, so it does not consume the history budget; oversized,
+over-budget, or unavailable images remain safe path fallbacks. This keeps
+renderer, main, sidecar, the models.dev catalog, and host persistence on one
+capability-aware contract.
 
 ### 5.1a Steer an active turn
 
@@ -322,6 +330,18 @@ type AgentCompactResponse = { accepted: boolean };
 session. It is available even when automatic context protection is disabled.
 Missing provider/session configuration fails through the normal `AppError`
 envelope; an active turn or compaction returns `AGENT_BUSY`.
+
+`agent.compact` is a blocking summary request, not a status poll: the sidecar
+serializes the conversation into one prompt, streams one model summary, and may
+retry a transient failure. Its transport deadline is therefore derived from that
+budget — `(1 + 3) × 180s` stream watchdog `+ 14s` of retry backoff `+ 10s`
+slack — instead of the flat 130s default, which expired while the sidecar was
+still summarizing a large context (**D614**, issue #795). The host also treats a
+transport deadline as "unknown" rather than "failed": when the call times out it
+re-reads the session's durable record, and reports success when a new checkpoint
+landed, because the sidecar persists through host-core whether or not Electron
+received the reply. A verdict the sidecar itself reported (for example
+`CONTEXT_COMPACTION_FAILED`) is never reconciled this way.
 
 ### 5.5 Plan and Goal checkpoint approval
 
@@ -492,7 +512,7 @@ type AgentActivity =
      reason: "manual" | "threshold" | "overflow" }
  | { phase: "recovering"; since: number }
  | { phase: "retrying"; since: number; attempt: number;
-     retryDelayMs?: number; error?: AgentActivityError }
+     infinite?: boolean; retryDelayMs?: number; error?: AgentActivityError }
  | { phase: "waiting-subagents"; since: number; subagentCount: number;
      agents?: AgentActivityAgent[] };
 
@@ -769,9 +789,14 @@ setup so a fast completion cannot beat the viewing-context update. Electron
 combines this hint with Main-owned window visibility/focus at the terminal event
 boundary. Missing, null, or mismatched context fails safe to notification. It
 also invokes
-`pi-desktop/notification/showNative({ id, sessionId, kind, title, body })` after
-localizing a new record, where `kind` is `"task" | "interactive"`. This
-Electron-only request never crosses into the host RPC domain.
+`pi-desktop/notification/showNative({ id, sessionId, kind, title, body, createdAt? })`
+after localizing a new record, where `kind` is `"task" | "interactive"` and
+`createdAt` is the durable task timestamp when available. Main keeps a
+`dismissedBefore` watermark for successful mark-all-read/clear actions and
+rejects task deliveries at or before that timestamp; individual acknowledgements
+use the durable id as a tombstone. This prevents a delayed renderer or host
+replay from resurfacing an already acknowledged banner. This Electron-only
+request never crosses into the host RPC domain.
 
 ```ts
 type AppNotification = {
@@ -813,6 +838,10 @@ Main sends two events:
   and recalculates the exact unread count. A terminal result already visible in
   the focused current chat, repeated terminal updates, and aborted turns emit
   nothing.
+- The durable `id` is the renderer and Electron native-delivery idempotency key.
+  A repeated `notification.changed` payload for an id already present in the
+  local list is a no-op; a delayed payload whose row was acknowledged or
+  cleared is ignored and must not recreate the row or its sidebar outcome.
 - `pi-desktop/notification/event/activated` after the user clicks Electron's
   native system notification. Renderer follows its existing session-selection
   path, including project activation for a project-bound session.
@@ -850,6 +879,14 @@ before readiness and before any window is created. The ID matches the NSIS
 package identity so notification attribution, notification settings, taskbar
 grouping, and installed shortcuts resolve to `PI-Desktop`, never the stock
 Electron host.
+
+Task native objects are retained by durable notification id, with at most one
+live object per id. Replayed `showNative` requests do not create a second
+object. A successful `notification.markRead`, `notification.markAllRead`, or
+`notification.clear` closes matching task objects (and leaves an id tombstone
+long enough to reject late delivery); a failed host mutation does not dismiss
+the object optimistically. Interactive prompt notifications use a separate
+transient registry and are not affected by task inbox mutations.
 
 The viewing-session hint is advisory and fail-safe: missing, stale, hidden, or
 unfocused renderer state creates the durable notification. Suppression occurs
@@ -1063,8 +1100,12 @@ configuration.
 `session/fork` is a protocol-v5 channel that creates an independent
 session from the source session's current active transcript. When optional
 `throughMessageId` is present, the copied snapshot ends at that message; an
-unknown id returns `NOT_FOUND`. Electron rejects
-the request with `AGENT_BUSY` while that source session has an active turn.
+unknown id returns `NOT_FOUND`. While a Desktop source has an active turn,
+`throughMessageId` may select an already-completed assistant prefix containing
+no messages owned by a running turn. The host validates this under its RPC lock;
+whole-session and active-turn forks still return `AGENT_BUSY`. Native Pi forks
+retain their existing idle/ownership guard. The source continues running when
+the child is activated; the renderer never reloads history over its live tail.
 Electron owns localization and supplies the user-facing branch title; the host
 fallback title is reserved for non-UI callers.
 The host assigns a new session id, message ids, and tool-call ids; it copies
@@ -1433,6 +1474,14 @@ project records from the global set by id or case-insensitive label before it
 filters disabled records, so a disabled project record still shadows a global
 one. The desktop-only `mcp/test` IPC action forces one connection test and
 returns its status to the MCP editor.
+The desktop's `mcp.list` IPC response probes previously ready remote connections
+before reporting their status. If a server no longer responds, its row reports
+`failed` instead of retaining a stale `ready` status; Test connection retries it. A failed settings probe does not interrupt an in-flight tool call; Test connection closes the old client before retrying.
+Stopping a session aborts its in-flight user MCP tool calls. The client sends
+`notifications/cancelled` for each active request without closing a connection
+used by other sessions; a completed or canceled tool call is never replayed.
+Cancellation stops the local wait, while a server may ignore the notification
+and finish an already started side effect.
 
 Desktop-only channels scan configuration written by other agent tools on the
 same machine — Claude Desktop (`claude_desktop_config.json` on macOS, Windows
@@ -1528,9 +1577,11 @@ Desktop-only skill market channels (not host RPC) live on Electron IPC:
   still return. `failureKinds` maps each name in `failedSources` to `policy`
   (the guard judged the target's own non-public address and refused it),
   `fake-ip` (it judged a fake-IP placeholder the local proxy invented for the
-  name — Clash's `198.18.0.0/15`; still refused on a direct or unreadable route,
-  where the guard fails closed and this app would dial that address itself, but a
-  condition of the local network rather than a fact about the source),
+  name — Clash's `198.18.0.0/15`; it remains refused on a direct or unreadable
+  route by default, while the explicit `allowFakeIp` setting may permit only
+  the benchmark placeholder for a transparent router/TUN deployment),
+  `unresolved` (the local DNS lookup returned no answer, so no address was
+  judged), or `network`.
   `unresolved` (the local DNS lookup returned no answer, so no address was
   judged), or `network`.
   `failureDetails` carries the same keys with the host that actually failed, the
@@ -1555,10 +1606,12 @@ Desktop-only skill market channels (not host RPC) live on Electron IPC:
 Desktop-only MCP market channels (not host RPC) live on Electron IPC:
 
 - `pi-desktop/mcp/market/search` — `{ query?, sources[], more? }` →
-  `{ entries, failedSources, exhausted }`. Main validates source URLs, pins
-  each resolved public address, follows only bounded HTTPS redirects, and keeps
-  cursor state for browse and server-side search. One failed source does not
-  discard successful sources; the response and caches are bounded.
+  `{ entries, failedSources, exhausted }`. Main validates source URLs and asks
+  the Electron session for the route on every hop. Fully proxied hops use the
+  session transport; direct and unknown hops pin the resolved public address by
+  default, with explicit `allowFakeIp` limited to benchmark placeholders.
+  Redirects stay bounded HTTPS, browse/search cursors are retained, and one
+  failed source does not discard successful sources; responses and caches are bounded.
 
 ### MCP OAuth (ADR 0283)
 
@@ -1693,12 +1746,16 @@ Renderer IPC kept for the Plan-safe preview facade and URL fallback:
 
 - `browser/openExternal({url?})` — allowlisted http(s)/mailto, or the current
   guest URL when omitted
-- event: `browser/event/state {url, title, isLoading, canGoBack, canGoForward}`
+- Renderer plugin-view open/close requests may carry `sessionId` and `tabId`.
+  Open binds the resource tab after checking the plugin contribution and scope;
+  close releases only that tab's retained page (or the session's pages when no
+  tab id is supplied). The shared plugin chrome is not closed with a sibling page.
+- event: `browser/event/state {url, title, isLoading, canGoBack, canGoForward, loadError?, sessionId?, tabId?}`
   (also pushed to plugin views as `browser:state`)
 - agent preview event: `browser/event/preview {sessionId, path?, url?}`.
   Electron Main validates a workspace `path` inside that session's project,
-  loads the guest when that conversation's plugin view is visible, and the
-  renderer opens `plugin:pi.browser/browser` with `location` in the matching
+  asks the renderer to create a Browser resource tab before navigation, with
+  `location` in the matching
   runtime panel context. Navigation of a background session does not steal the
   visible guest.
 
@@ -1937,6 +1994,17 @@ Templates load from `<workspace>/.pi/prompts/*.md` and
 `~/.pi/agent/prompts/*.md` (project wins name conflicts; short TTL cache).
 Without a workspace only user-global templates, builtins, and plugin
 commands return.
+
+A source that fails is not an empty command list (**D613**, issue #795).
+Submit-time resolution distinguishes three outcomes: a resolved
+builtin/plugin/extension command dispatches locally, a template, an unknown
+alias, and a command entry without a dispatchable id stay on the prompt path,
+and an unreadable source refuses the submission. The refusal is deliberate —
+with the source down the composer cannot prove `/compact` is not a builtin, and
+a control command sent to the model as literal text is acted on. The refusal
+keeps the draft, shows `chat.slashCommandSourceUnavailable`, and leaves the TTL
+cache cold so the next submit retries the read; a warm cache keeps resolving
+through a source blip.
 
 ### fs/index
 
@@ -2249,3 +2317,37 @@ returns `{ ok: true }` and forwards to host `providers.reorder`. The sandboxed
 preload permits this channel through the shared IPC registry. Invalid placement
 or missing providers returns `INVALID_PARAMS`; configuration and defaults are
 unchanged. See [provider configuration](12-provider-config-schema.md).
+
+## 15. Cloud configuration sync
+
+The Settings → Cloud sync page uses the following renderer-to-Main channels;
+all are forwarded to the Host-owned `configSync.*` RPC methods:
+
+| IPC channel | Host method | contract |
+|---|---|---|
+| `pi-desktop/configSync/getState` | `configSync.getState` | redacted status, category selections, preview counts, and pending approval summaries |
+| `pi-desktop/configSync/test` | `configSync.test` | WebDAV capability probe using a temporary object; no configuration is persisted |
+| `pi-desktop/configSync/configure` | `configSync.configure` | validates the endpoint, stores encrypted local sync metadata, and enables the vault |
+| `pi-desktop/configSync/syncNow` | `configSync.syncNow` | runs one Host-owned reconciliation cycle |
+| `pi-desktop/configSync/pause` | `configSync.pause` | pauses or resumes this device only |
+| `pi-desktop/configSync/unlock` | `configSync.unlock` | unlocks the local vault for the current process/device |
+| `pi-desktop/configSync/approve` / `reject` | `configSync.approve` / `configSync.reject` | records a digest-bound local activation decision |
+| `pi-desktop/configSync/mapProject` | `configSync.mapProject` | binds one opaque project/group identity to one or more explicitly selected local folders, preserving primary-root order |
+| `pi-desktop/configSync/listHistory` | `configSync.listHistory` | lists redacted reachable revision metadata only |
+| `pi-desktop/configSync/restore` | `configSync.restore` | creates a new propagated revision from an explicitly acknowledged historical revision and stages local approvals/recovery |
+| `pi-desktop/configSync/changePassword` | `configSync.changePassword` | CAS-rewraps the vault key header without returning keys or secret values |
+| `pi-desktop/configSync/disconnect` | `configSync.disconnect` | removes local sync metadata and keys; it does not delete remote vault data |
+
+Input passwords are accepted only for the operation that needs them. No raw
+secret, vault key, decrypted resource, or remote archive crosses back to the
+renderer. The `configSync.changed` event carries the same redacted state and
+is emitted by Host-originated changes, including the Host scheduler. Main is a
+transport/lifecycle coordinator and does not schedule, merge, encrypt, or
+apply configuration.
+
+A manual sync reports `configSync.progress` while it runs: the phase
+(`capture`, `download`, `merge`, `upload`, `apply`, or `cleanup`), the units
+done and total for that phase, and the bytes when they are known. A long upload
+of many resource objects is therefore not an interface with nothing to show.
+Background polls report nothing, since only the manual path has a caller
+watching.

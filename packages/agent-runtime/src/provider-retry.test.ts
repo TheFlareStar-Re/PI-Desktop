@@ -89,6 +89,213 @@ function successfulStream(): ReturnType<typeof createAssistantMessageEventStream
   return stream;
 }
 
+describe("local request failures", () => {
+  const errorDetails = {
+    code: "LOCAL_REQUEST_ERROR" as const,
+    phase: "context-validation" as const,
+    message: "Local request validation failed.",
+    causeName: "TypeError",
+  };
+
+  it.each([false, true])("never claims, retries or fetches a local event (started=%s)", async (started) => {
+    const failure = Object.assign(assistantMessage({ errorMessage: "fetch failed" }), { errorDetails });
+    const fetch = vi.fn();
+    const createStream = vi.fn(() => {
+      const inner = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        if (started) inner.push({ type: "start", partial: failure });
+        inner.push({ type: "error", reason: "error", error: failure });
+        inner.end(failure);
+      });
+      return inner;
+    });
+    // Even a permissive controller must not get to claim a local failure.
+    const claim = vi.fn(() => undefined as number | undefined).mockReturnValueOnce(1);
+    const sleep = vi.fn(async () => undefined);
+    const onRetry = vi.fn();
+    const stream = createProviderRetryStream(model, context, { fetch }, createStream, {
+      claim, sleep, onRetry, headers: () => undefined, status: () => 429,
+      failure: () => describeProviderFetchFailure(new TypeError("fetch failed")),
+    });
+    const events = [];
+    for await (const event of stream) events.push(event);
+    const result = await stream.result();
+    expect(createStream).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(result).toBe(failure);
+    expect(events.at(-1)).toMatchObject({ type: "error", error: { errorDetails } });
+    expect(classifyProviderError(result, 429)).toMatchObject({
+      code: "INTERNAL", retriable: false,
+      details: { origin: "local", phase: "context-validation", causeName: "TypeError" },
+    });
+  });
+
+  it("retains setup error metadata and its original cause without serializing private data", async () => {
+    const cause = new TypeError("private prompt api_key=test-secret");
+    const error = Object.assign(new Error("private payload", { cause }), {
+      code: "LOCAL_REQUEST_ERROR", phase: "request-preparation",
+    });
+    const claim = vi.fn();
+    const fetch = vi.fn();
+    const createStream = vi.fn(() => { throw error; });
+    const stream = createProviderRetryStream(model, context, { fetch }, createStream, {
+      claim, headers: () => undefined,
+    });
+    const result = await stream.result();
+    expect(result).toHaveProperty("errorDetails", {
+      code: "LOCAL_REQUEST_ERROR", phase: "request-preparation",
+      message: expect.any(String), causeName: "TypeError",
+    });
+    expect(result).toHaveProperty("cause", error);
+    expect(error.cause).toBe(cause);
+    expect(JSON.stringify(result)).not.toMatch(/private|test-secret|stack/);
+    expect(classifyProviderError(result)).toMatchObject({ code: "INTERNAL", retriable: false });
+    expect(createStream).toHaveBeenCalledTimes(1);
+    expect(claim).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("still retries an ordinary TypeError fetch rejection with no local metadata", async () => {
+    const fetch = vi.fn().mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(new Response("ok"));
+    const claim = vi.fn((error: ClassifiedAgentError) => error.retriable ? 1 : undefined);
+    const sleep = vi.fn(async () => undefined);
+    const stream = createProviderRetryStream(model, context, { fetch }, (options) => {
+      const inner = createAssistantMessageEventStream();
+      void options.fetch!("https://provider.invalid", {}).then(() => {
+        const message = assistantMessage({ stopReason: "stop", errorMessage: undefined });
+        inner.push({ type: "done", reason: "stop", message });
+        inner.end(message);
+      }, (error) => {
+        const message = assistantMessage({ errorMessage: error.message });
+        inner.push({ type: "error", reason: "error", error: message });
+        inner.end(message);
+      });
+      return inner;
+    }, { claim, sleep, headers: () => undefined });
+    expect((await stream.result()).stopReason).toBe("stop");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(claim).toHaveBeenCalledWith(expect.objectContaining({ code: "NETWORK_ERROR", retriable: true }), "request");
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an already cancelled request from starting or claiming a retry", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const createStream = vi.fn(() => failedStream());
+    const claim = vi.fn();
+    const stream = createProviderRetryStream(model, context, { signal: controller.signal }, createStream, {
+      claim, headers: () => undefined,
+    });
+    const result = await stream.result();
+    expect(result.stopReason).toBe("aborted");
+    expect(classifyProviderError(result)).toMatchObject({ code: "TURN_ABORTED", retriable: false });
+    expect(createStream).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it("keeps a phase-only local marker terminal under a stale 429", async () => {
+    // The captured status belongs to an earlier response. The later failure is
+    // explicit local provenance, so it must not be relabelled as a rate limit and
+    // must not claim the retry the stale status alone would allow.
+    const failure = Object.assign(assistantMessage({ errorMessage: "fetch failed" }), {
+      errorDetails: {
+        code: "LOCAL_REQUEST_ERROR", phase: "context-estimation", causeName: "TypeError",
+      },
+    });
+    const claim = vi.fn(() => undefined as number | undefined).mockReturnValueOnce(1);
+    const sleep = vi.fn(async () => undefined);
+    const createStream = vi.fn(() => {
+      const inner = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        inner.push({ type: "error", reason: "error", error: failure });
+        inner.end(failure);
+      });
+      return inner;
+    });
+    const stream = createProviderRetryStream(model, context, {}, createStream, {
+      claim, sleep, headers: () => undefined, status: () => 429,
+    });
+    const events = [];
+    for await (const event of stream) events.push(event);
+    const result = await stream.result();
+
+    expect(createStream).toHaveBeenCalledTimes(1);
+    expect(claim).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result).toBe(failure);
+    expect(result.errorMessage).toBe("fetch failed");
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: { errorMessage: "fetch failed" },
+    });
+    expect(classifyProviderError(result, 429)).toMatchObject({
+      code: "INTERNAL", retriable: false,
+      details: { origin: "local", phase: "context-estimation", causeName: "TypeError" },
+    });
+  });
+
+  it("neither retries nor relabels a synchronous local throw under a stale 429", async () => {
+    const error = Object.assign(new Error("Local request preparation failed."), {
+      name: "LocalRequestError", code: "LOCAL_REQUEST_ERROR",
+      phase: "request-preparation", cause: new TypeError("private prompt"),
+    });
+    const claim = vi.fn(() => 1 as number | undefined);
+    const sleep = vi.fn(async () => undefined);
+    const createStream = vi.fn(() => { throw error; });
+    const stream = createProviderRetryStream(model, context, {}, createStream, {
+      claim, sleep, headers: () => ({ "retry-after": "1" }), status: () => 429,
+    });
+    const events: string[] = [];
+    for await (const event of stream) events.push(event.type);
+    const result = await stream.result();
+
+    expect(events).toEqual(["error"]);
+    expect(createStream).toHaveBeenCalledTimes(1);
+    expect(claim).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result).toHaveProperty("errorDetails", {
+      code: "LOCAL_REQUEST_ERROR", phase: "request-preparation",
+      message: expect.any(String), causeName: "TypeError",
+    });
+    expect(JSON.stringify(result)).not.toMatch(/private/);
+    expect(classifyProviderError(result, 429)).toMatchObject({
+      code: "INTERNAL", retriable: false,
+    });
+  });
+
+  it("keeps a locally wrapped Stop as cancellation, not as a local failure", async () => {
+    // pi-ai records the wrapped AbortError only in the marker's cause, and this
+    // path has no aborted signal to read, so the cause name is all there is.
+    const thrown = Object.assign(new Error("Local request preparation failed."), {
+      name: "LocalRequestError", code: "LOCAL_REQUEST_ERROR",
+      phase: "request-preparation",
+      cause: Object.assign(new Error("The operation was aborted"), { name: "AbortError" }),
+    });
+    const claim = vi.fn(() => 1 as number | undefined);
+    const sleep = vi.fn(async () => undefined);
+    const createStream = vi.fn(() => { throw thrown; });
+    const stream = createProviderRetryStream(model, context, {}, createStream, {
+      claim, sleep, headers: () => undefined,
+    });
+    const result = await stream.result();
+
+    expect(createStream).toHaveBeenCalledTimes(1);
+    expect(claim).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result).toHaveProperty("errorDetails", {
+      code: "LOCAL_REQUEST_ERROR", phase: "request-preparation",
+      message: expect.any(String), causeName: "AbortError",
+    });
+    expect(classifyProviderError(result)).toMatchObject({
+      code: "TURN_ABORTED", retriable: false,
+    });
+  });
+});
+
 describe("provider rate-limit retry", () => {
   it("uses a captured 429 status when the provider body is generic", () => {
     expect(classifyProviderError("upstream unavailable", 429)).toMatchObject({
@@ -916,7 +1123,7 @@ describe("stream idle watchdog", () => {
     }
   });
 
-  it("resets the idle timer on every event", async () => {
+  it("resets the idle timer only on substantive provider output", async () => {
     vi.useFakeTimers();
     try {
       const slow = createAssistantMessageEventStream();
@@ -927,16 +1134,86 @@ describe("stream idle watchdog", () => {
       const collected = (async () => {
         for await (const event of wrapped) events.push(event.type);
       })();
-      // An event at t=800 re-arms the watchdog; without the reset the stream
+      // A text delta at t=800 re-arms the watchdog; without the reset the stream
       // would already have failed at t=1000.
       await vi.advanceTimersByTimeAsync(800);
-      slow.push({ type: "text_start", contentIndex: 0, partial: assistantMessage() });
+      slow.push({
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "answer",
+        partial: assistantMessage(),
+      });
       await vi.advanceTimersByTimeAsync(800);
-      expect(events).toEqual(["start", "text_start"]);
-      await vi.advanceTimersByTimeAsync(400);
+      expect(events).toEqual(["start", "text_delta"]);
+      await vi.advanceTimersByTimeAsync(200);
       await collected;
-      expect(events).toEqual(["start", "text_start", "error"]);
+      expect(events).toEqual(["start", "text_delta", "error"]);
       expect((await wrapped.result()).errorMessage).toContain("stream stalled");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let setup or empty delta events hide a stalled stream", async () => {
+    vi.useFakeTimers();
+    try {
+      const slow = createAssistantMessageEventStream();
+      slow.push({ type: "start", partial: assistantMessage() });
+      const wrapped = withStreamIdleTimeout(slow, model, 1_000);
+
+      const events: string[] = [];
+      const collected = (async () => {
+        for await (const event of wrapped) events.push(event.type);
+      })();
+      await vi.advanceTimersByTimeAsync(400);
+      slow.push({ type: "text_start", contentIndex: 0, partial: assistantMessage() });
+      await vi.advanceTimersByTimeAsync(400);
+      slow.push({
+        type: "toolcall_delta",
+        contentIndex: 1,
+        delta: "",
+        partial: assistantMessage(),
+      });
+      await vi.advanceTimersByTimeAsync(200);
+      await collected;
+
+      expect(events).toEqual(["start", "text_start", "toolcall_delta", "error"]);
+      expect((await wrapped.result()).errorMessage).toContain("no provider progress");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("treats reasoning and tool-call arguments as progress", async () => {
+    vi.useFakeTimers();
+    try {
+      const slow = createAssistantMessageEventStream();
+      slow.push({ type: "start", partial: assistantMessage() });
+      const wrapped = withStreamIdleTimeout(slow, model, 1_000);
+
+      const events: string[] = [];
+      const collected = (async () => {
+        for await (const event of wrapped) events.push(event.type);
+      })();
+      await vi.advanceTimersByTimeAsync(800);
+      slow.push({
+        type: "thinking_delta",
+        contentIndex: 0,
+        delta: "thought",
+        partial: assistantMessage(),
+      });
+      await vi.advanceTimersByTimeAsync(800);
+      slow.push({
+        type: "toolcall_delta",
+        contentIndex: 1,
+        delta: '{"path":',
+        partial: assistantMessage(),
+      });
+      await vi.advanceTimersByTimeAsync(800);
+      expect(events).toEqual(["start", "thinking_delta", "toolcall_delta"]);
+      await vi.advanceTimersByTimeAsync(200);
+      await collected;
+      expect(events).toEqual(["start", "thinking_delta", "toolcall_delta", "error"]);
     } finally {
       vi.useRealTimers();
     }

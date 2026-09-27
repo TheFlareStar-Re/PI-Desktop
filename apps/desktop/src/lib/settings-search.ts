@@ -16,7 +16,9 @@ export type SettingsTabId =
   | "subagents"
   | "import"
   | "projects"
+  | "sync"
   | "remoteHosts"
+  | "voice"
   | "about";
 
 export type SettingsNavGroupId =
@@ -47,6 +49,8 @@ export type SettingsNavEntry = {
    * rail, the page, and settings search drop it together.
    */
   developerOnly?: true;
+  /** Localized Experimental badge shown beside the rail row and page title. */
+  experimentalBadgeKey?: string;
 };
 
 export const SETTINGS_NAV: SettingsNavEntry[] = [
@@ -65,12 +69,20 @@ export const SETTINGS_NAV: SettingsNavEntry[] = [
       "settings.closeBehaviorTitle",
       "settings.closeBehaviorTray",
       "settings.closeBehaviorQuit",
+      "settings.power",
+      "settings.keepAwakeWhileRunning",
+      "settings.keepAwakeWhileRunningDesc",
       "settings.network",
       "settings.proxy",
       "settings.proxySystem",
       "settings.proxyDirect",
       "settings.proxyCustom",
       "settings.proxyUrl",
+      "settings.networkRelaxedMode",
+      "settings.networkRelaxedModeDesc",
+      "settings.networkRelaxedModeStrictDesc",
+      "settings.preventScreenSleep",
+      "settings.preventScreenSleepDesc",
     ],
   },
   {
@@ -85,10 +97,15 @@ export const SETTINGS_NAV: SettingsNavEntry[] = [
       "settings.permissionModeAcceptEdits",
       "settings.permissionModeAuto",
       "settings.defaultsTitle",
+      "settings.imageModel",
       "settings.mode",
       "settings.commandShell",
       "settings.linkOpenTarget",
       "settings.enterToSend",
+      "settings.infiniteProviderRetry",
+      "settings.infiniteProviderRetryDesc",
+      "settings.smoothStreaming",
+      "settings.smoothStreamingDesc",
       "settings.thinkingDisplayMode",
       "settings.thinkingDisplayDetailed",
       "settings.thinkingDisplayCompact",
@@ -105,6 +122,22 @@ export const SETTINGS_NAV: SettingsNavEntry[] = [
       "settings.promptEnhancementModelFollow",
       "settings.promptEnhancementThinking",
       "settings.largePasteThreshold",
+    ],
+  },
+  {
+    id: "voice",
+    labelKey: "settings.nav.voice",
+    titleKey: "settings.voice",
+    group: "preferences",
+    developerOnly: true,
+    experimentalBadgeKey: "settings.voiceExperimental",
+    keywordKeys: [
+      "settings.voiceEnable",
+      "settings.voiceMicrophone",
+      "settings.voiceLanguages",
+      "settings.voiceChineseVariant",
+      "settings.voiceModel",
+      "settings.voiceLocalModels",
     ],
   },
   {
@@ -142,6 +175,9 @@ export const SETTINGS_NAV: SettingsNavEntry[] = [
       "settings.apiKey",
       "settings.baseUrl",
       "settings.apiStyle",
+      // Subscription accounts share the service list (D625).
+      "settings.vendorAccounts",
+      "settings.vendorSubscription",
     ],
   },
   {
@@ -234,11 +270,28 @@ export const SETTINGS_NAV: SettingsNavEntry[] = [
     ],
   },
   {
+    id: "sync",
+    labelKey: "settings.nav.sync",
+    titleKey: "settings.configSync.title",
+    group: "system",
+    developerOnly: true,
+    experimentalBadgeKey: "settings.configSync.experimental",
+    keywordKeys: [
+      "settings.configSync.connectionTitle",
+      "settings.configSync.endpoint",
+      "settings.configSync.statusTitle",
+      "settings.configSync.categoriesTitle",
+      "settings.configSync.approvalsTitle",
+      "settings.configSync.syncNow",
+    ],
+  },
+  {
     id: "remoteHosts",
     labelKey: "settings.nav.remoteHosts",
     titleKey: "settings.remoteHosts.title",
     group: "system",
     developerOnly: true,
+    experimentalBadgeKey: "settings.remoteHosts.experimental",
     keywordKeys: [
       "settings.remoteHosts.title",
       "settings.remoteHosts.addTitle",
@@ -265,6 +318,7 @@ export const SETTINGS_NAV: SettingsNavEntry[] = [
       "settings.logs",
       "settings.feedback",
       "updates.title",
+      "updates.preferenceTitle",
       "settings.developer",
       "settings.developerMode",
       "settings.devTools",

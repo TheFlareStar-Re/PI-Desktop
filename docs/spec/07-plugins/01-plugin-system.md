@@ -306,7 +306,9 @@ Namespace: `pi.plugin.*`
 Skills are contributed declaratively (`contributes.skills` + `agent.prompt.inject`),
 not invoked by the plugin: the host puts the catalog in the system prompt and the
 model loads a body through the built-in `Skill` tool (D174). Planned, not
-currently exposed: `pi.agent.appendSystemHint(text)`.
+currently exposed: `pi.agent.appendSystemHint(text)`. When the body is loaded,
+the tool result also identifies the `SKILL.md` location and the directory to use
+when resolving relative references; the catalog remains metadata-only.
 
 ### Background services (requires `background.service`)
 - `pi.services.register({ id, start, stop? })`
@@ -517,6 +519,16 @@ Rules the control encodes:
   policy (edit or Test connection to retry), rather than repeatedly connecting
   on each call. Removed tools return `TOOL_NOT_FOUND`. Recovery never replays a
   failed `tools/call`, which may already have performed a mutation.
+
+- Streamable HTTP `202 Accepted` acknowledgements for notifications and client
+  responses are not JSON-RPC replies. Any acknowledgement body is discarded,
+  including plain-text `Accepted`; ordinary request replies still follow the
+  JSON/SSE parsing and response-size limits.
+- The MCP row shows “Authorization required” only when runtime status explicitly
+  reports `authRequired`. Missing credentials, an untested connection, and
+  non-authentication failures do not imply OAuth is required. A stored OAuth
+  credential does not hide a subsequent authentication failure. Manual OAuth
+  authorization remains available from the HTTP server menu.
 
 ### 12.3 Skills management in Settings > Agent
 

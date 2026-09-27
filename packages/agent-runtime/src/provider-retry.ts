@@ -14,6 +14,7 @@ import {
   classifyAgentError,
   type ClassifiedAgentError,
 } from "./agent-errors.js";
+import { readLocalRequestErrorDetails } from "./local-request-errors.js";
 import {
   describeProviderFetchFailure,
   type ProviderFetchFailure,
@@ -35,7 +36,7 @@ export const PROVIDER_SETUP_MAX_RETRY_DELAY_MS = 8_000;
  * Retries allowed after the first non-rate-limit transient failure. Upstream
  * gateway faults (502/503/504, dropped
  * sockets) routinely need more than one attempt, so they share one bounded
- * logical-turn budget the way rate limits do instead of getting a single retry
+ * response-recovery budget the way rate limits do instead of getting a single retry
  * per phase.
  */
 export const PROVIDER_TRANSIENT_MAX_RETRIES = PROVIDER_RETRY_MAX_RETRIES;
@@ -128,7 +129,7 @@ export type ProviderResponseSnapshot = {
 };
 
 export type ProviderRetryController = {
-  /** Claim one retry in the shared logical-turn budget. */
+  /** Claim one retry across setup/stream failures of the current response. */
   claim: (
     error: ClassifiedAgentError,
     phase: ProviderRetryPhase,
@@ -367,6 +368,8 @@ export function captureProviderResponse(
 }
 
 function normalizeRateLimitMessage(message: AssistantMessage): AssistantMessage {
+  // A previous HTTP response is not evidence about a later local failure.
+  if (readLocalRequestErrorDetails(message)) return message;
   const errorMessage = message.errorMessage ?? "";
   if (/^\s*429\b/.test(errorMessage)) return message;
   return {
@@ -380,7 +383,8 @@ function setupErrorMessage(
   error: unknown,
   aborted: boolean,
 ): AssistantMessage {
-  return {
+  const local = readLocalRequestErrorDetails(error);
+  const message: AssistantMessage = {
     role: "assistant",
     content: [],
     api: model.api,
@@ -395,9 +399,14 @@ function setupErrorMessage(
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
     stopReason: aborted ? "aborted" : "error",
-    errorMessage: error instanceof Error ? error.message : String(error),
+    errorMessage: local
+      ? (aborted ? "Request aborted" : local.message)
+      : error instanceof Error ? error.message : String(error),
+    ...(!aborted && local ? { errorDetails: local } : {}),
     timestamp: Date.now(),
   };
+  // Preserve the original exception for local diagnostics, not JSON/UI events.
+  return local ? Object.defineProperty(message, "cause", { value: error }) : message;
 }
 
 type StreamFactory = (
@@ -447,23 +456,20 @@ export function createProviderRetryStream(
           event.type === "error" &&
           event.reason === "error"
         ) {
-          const errorMessage =
-            typeof event.error.errorMessage === "string"
-              ? event.error.errorMessage
-              : event.error;
           // Fold in the cause the fetch wrapper captured for this attempt: the
           // message pi-ai hands over is already flattened, so without it the
           // retry indicator and the terminal error read `fetch failed` with no
           // errno (issue #234).
           const error = withProviderFetchFailure(
-            classifyProviderError(errorMessage, controller.status?.()),
+            classifyProviderError(event.error, controller.status?.()),
             controller.failure?.(),
           );
           if (!limitRepairTried && isOpaqueBadRequest(error)) {
             opaqueLimitRejection = error;
             break;
           }
-          const attempt = controller.claim(error, "request");
+          const attempt = error.details?.origin === "local"
+            ? undefined : controller.claim(error, "request");
           if (attempt !== undefined) {
             retry = { error, attempt };
             break;
@@ -553,7 +559,7 @@ export const STREAM_IDLE_TIMEOUT_DEFAULT_MS = 180_000;
 export const STREAM_IDLE_TIMEOUT_FLOOR_MS = PROVIDER_RATE_LIMIT_MAX_DELAY_MS;
 
 /**
- * `PI_DESKTOP_STREAM_IDLE_TIMEOUT_MS` overrides the zero-event idle budget;
+ * `PI_DESKTOP_STREAM_IDLE_TIMEOUT_MS` overrides the no-progress idle budget;
  * `0` disables the watchdog, and any other override is clamped up to
  * `STREAM_IDLE_TIMEOUT_FLOOR_MS` (see above). A value that is not a number, or
  * is negative, keeps the default.
@@ -572,16 +578,17 @@ export function streamIdleTimeoutMs(): number {
 }
 
 function streamIdleTimeoutMessage(timeoutMs: number): string {
-  return `stream stalled: no provider events for ${timeoutMs}ms`;
+  return `stream stalled: no provider progress for ${timeoutMs}ms`;
 }
 
 /**
- * Zero-event idle watchdog around a provider stream. Every event resets the
- * timer and total stream duration is never limited, so a long but productive
- * stream is forwarded unchanged. A stream that stays silent for `timeoutMs` is
- * ended as a `STREAM_FAILED`-classified error result — the same shape a dropped
- * socket produces — so the existing transient retry budget picks it up instead
- * of adding a second recovery path.
+ * Progress watchdog around a provider stream. Only non-empty text, thinking,
+ * or tool-call deltas reset the timer; setup and empty metadata events do not
+ * keep a stalled stream alive. Total stream duration is never limited, so a
+ * long but productive stream is forwarded unchanged. A stream without progress
+ * for `timeoutMs` ends as a `STREAM_FAILED`-classified error result — the same
+ * shape a dropped socket produces — so the existing transient retry budget
+ * picks it up instead of adding a second recovery path.
  *
  * `onStall` is the caller's chance to *stop* what this watchdog abandons, and a
  * caller that can must pass it. The wrapper sits outside the retry adapter, so
@@ -604,12 +611,13 @@ export function withStreamIdleTimeout(
 
   void (async () => {
     const iterator = inner[Symbol.asyncIterator]();
+    let lastProgressAt = Date.now();
     for (;;) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const idle = new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error(streamIdleTimeoutMessage(timeoutMs))),
-          timeoutMs,
+          Math.max(0, timeoutMs - (Date.now() - lastProgressAt)),
         );
       });
       let step: IteratorResult<AssistantMessageEvent>;
@@ -637,6 +645,14 @@ export function withStreamIdleTimeout(
         return;
       }
       outer.push(step.value);
+      if (
+        (step.value.type === "text_delta" ||
+          step.value.type === "thinking_delta" ||
+          step.value.type === "toolcall_delta") &&
+        step.value.delta.length > 0
+      ) {
+        lastProgressAt = Date.now();
+      }
       if (step.value.type === "done" || step.value.type === "error") {
         return;
       }

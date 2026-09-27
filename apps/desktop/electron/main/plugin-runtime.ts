@@ -12,6 +12,7 @@ import type { Stats } from "node:fs";
 import { open as openFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { LoadedSkillDocument } from "./skill-document";
 import {
   busTopicAllowed,
   isDeniedFsPath,
@@ -78,9 +79,16 @@ import {
   resolveWithinRoot,
 } from "@pi-desktop/host-runtime";
 import { pluginChildEnv } from "./child-process-env";
+import {
+  readThemeAssetBytes,
+  resolveAbsoluteThemeAssetPath,
+  resolvePackageThemeAssetPath,
+  themeAssetGroupWithinBudget,
+} from "./plugin-theme-assets.js";
 import { desktopDataDir } from "./data-paths";
 import { McpServerClient, type McpServerClientOptions } from "./plugin-mcp";
 import { PluginToolInvocations, type PluginToolInvocation } from "./plugin-tool-invocations";
+import { McpCallRegistry } from "./mcp-call-registry";
 import { DevPluginWatcher, type DevPluginWatcherDeps } from "./plugin-watcher";
 import { parseAllowedExternalUrl } from "./safe-open-external";
 import type { PluginAppearance } from "../shared/plugin-panel-chrome";
@@ -384,7 +392,14 @@ export type PluginHostServices = {
    */
   pluginShortcuts?: PluginShortcutRegistry;
   /** Fired when a plugin host process dies on its own (crash, OOM, hard exit). */
-  onPluginCrash?: (info: { pluginId: string; name: string; exitCode: number }) => void;
+  onPluginCrash?: (info: {
+    pluginId: string;
+    name: string;
+    /** Unsigned process exit code, matching the human-readable crash detail. */
+    exitCode: number;
+    /** Hex form for Windows hard-fault codes, when applicable. */
+    exitCodeHex?: string;
+  }) => void;
   /** Fired when a resident service changes supervision state. */
   onServiceChange?: (status: PluginServiceStatus) => void;
   /** Fired after a development plugin was reloaded from disk, or failed to. */
@@ -399,12 +414,13 @@ export type PluginHostServices = {
     navigate: (
       input: { url?: string; path?: string },
       sessionId?: string,
+      tabId?: string,
     ) => Promise<unknown>;
-    action: (action: "back" | "forward" | "reload" | "stop") => void;
+    action: (action: "back" | "forward" | "reload" | "stop", sessionId?: string, tabId?: string) => void;
     setBounds: (pluginId: string, hole: unknown) => unknown;
     setVisible: (pluginId: string, visible: boolean) => void;
     getState: () => unknown;
-    openExternal: () => void;
+    openExternal: (sessionId?: string, tabId?: string) => void;
     snapshot: () => Promise<unknown>;
     screenshot: (
       input?: { fullPage?: boolean },
@@ -624,6 +640,34 @@ const SERVICE_RESTART_MAX_DELAY_MS = 30_000;
 const MAX_SERVICE_RESTARTS = 5;
 /** A host process that stays up this long is healthy; the backoff resets. */
 const SERVICE_HEALTHY_MS = 60_000;
+/** Convert Electron's signed Windows status into the process's unsigned code. */
+function childExitUnsigned(code: number): number {
+  if (!Number.isFinite(code)) return code;
+  return code < 0 ? code + 0x1_0000_0000 : code;
+}
+
+/** Hex form for Windows hard-fault codes, when the status is in that range. */
+function childExitHex(code: number): string | undefined {
+  const unsigned = childExitUnsigned(code);
+  if (!Number.isFinite(unsigned) || unsigned < 0x8000_0000 || unsigned > 0xffff_ffff) {
+    return undefined;
+  }
+  return `0x${unsigned.toString(16).toUpperCase()}`;
+}
+
+/**
+ * `exit code N`, plus the unsigned hex form in the range a Windows process
+ * reports for a hard fault. Electron hands `code` through as a signed int, so
+ * `-1073741819` is the same value as `0xC0000005`; printing both keeps the
+ * number usable without interpreting what it means.
+ */
+function childExitLabel(code: number): string {
+  if (!Number.isFinite(code)) return "exit code unknown";
+  const unsigned = childExitUnsigned(code);
+  const hex = childExitHex(code);
+  return `exit code ${unsigned}${hex ? ` (${hex})` : ""}`;
+}
+
 /** Bus payloads are messages, not file transfers. */
 const MAX_BUS_PAYLOAD_BYTES = 64 * 1024;
 /** A plugin may hold at most this many live subscriptions. */
@@ -1094,10 +1138,9 @@ export function resolveInsidePlugin(pluginPath: string, relative: string): strin
 /**
  * Resolve one theme's declared assets to files inside the plugin package.
  *
- * The manifest validator already checked the shape; here each entry has to
- * exist, stay out of the dependency directory, and fit the declared total. A
- * theme that asks for more than the budget gets none of its assets, so a sheet
- * referencing one is refused instead of served from a half-honoured list.
+ * Package-relative assets are canonicalized after the plugin's `onLoad` hook
+ * and rechecked by `resolveThemeAsset` before every host-scheme read. Absolute
+ * assets retain their existing behavior.
  */
 function resolveThemeAssets(
   pluginPath: string,
@@ -1109,13 +1152,13 @@ function resolveThemeAssets(
   let dropped = 0;
   for (const asset of declared) {
     const normalized = normalizeThemeAssetPath(asset);
-    if (!normalized || normalized.split("/").includes("node_modules")) {
+    if (!normalized || normalized.split("/").some((segment) => segment.toLowerCase() === "node_modules")) {
       dropped += 1;
       continue;
     }
     const absolute = isExternalThemeAssetPath(normalized)
-      ? normalized
-      : resolveInsidePlugin(pluginPath, normalized);
+      ? resolveAbsoluteThemeAssetPath(normalized)
+      : resolvePackageThemeAssetPath(pluginPath, normalized);
     if (!absolute || !existsSync(absolute)) {
       dropped += 1;
       continue;
@@ -1245,7 +1288,9 @@ export class PluginRuntime {
    * so a path nobody declared has no URL at all (ADR 0248).
    */
   private themeAssets = new Map<string, Map<string, string>>();
+  private themeAssetGroups = new Map<string, Map<string, ReadonlyMap<string, string>>>();
   private mcpClients = new Map<string, McpServerClient[]>();
+  private readonly mcpCalls = new McpCallRegistry();
   private serviceStates = new Map<string, PluginServiceStatus>();
   private restarts = new Map<string, RestartRecord>();
   private busSubscriptions = new Map<string, BusSubscription>();
@@ -1413,9 +1458,11 @@ export class PluginRuntime {
   private externalThemeAsset(loaded: LoadedPlugin, target: string): string | null {
     const key = normalizeThemeAssetPath(target);
     if (!key || !isExternalThemeAssetPath(key)) return null;
+    const absolute = resolveAbsoluteThemeAssetPath(key);
+    if (!absolute) return null;
     let stats: Stats;
     try {
-      stats = statSync(key);
+      stats = statSync(absolute);
     } catch {
       return null;
     }
@@ -1425,14 +1472,25 @@ export class PluginRuntime {
       registry = new Map();
       this.themeAssets.set(loaded.manifest.id, registry);
     }
-    registry.set(key, key);
+    registry.set(key, absolute);
     return themeAssetUrl(loaded.manifest.id, key);
   }
 
-  resolveThemeAsset(pluginId: string, assetPath: string): string | null {
+  resolveThemeAsset(pluginId: string, assetPath: string): Uint8Array | null {
     const normalized = normalizeThemeAssetPath(assetPath);
     if (!normalized) return null;
-    return this.themeAssets.get(pluginId)?.get(normalized) ?? null;
+    const registered = this.themeAssets.get(pluginId)?.get(normalized);
+    if (!registered) return null;
+    const loaded = this.loaded.get(pluginId);
+    if (!loaded) return null;
+    const current = isExternalThemeAssetPath(normalized)
+      ? resolveAbsoluteThemeAssetPath(normalized)
+      : resolvePackageThemeAssetPath(loaded.path, normalized);
+    if (current !== registered) return null;
+    const groups = this.themeAssetGroups.get(pluginId);
+    const owners = groups ? [...groups.values()].filter((group) => group.has(normalized)) : [];
+    if (owners.some((group) => !themeAssetGroupWithinBudget(loaded.path, group))) return null;
+    return readThemeAssetBytes(registered);
   }
 
   /** Supervision state of every resident service, ordered for a stable list. */
@@ -1449,7 +1507,7 @@ export class PluginRuntime {
    * only, and the size cap is re-checked because the file may have changed
    * since load.
    */
-  loadSkillBody(id: string): { id: string; name: string; body: string } {
+  loadSkillBody(id: string): LoadedSkillDocument {
     const skill = this.skills.get(id);
     if (!skill) throw apiError("NOT_FOUND", `unknown skill: ${id}`);
     if (!this.loaded.has(skill.pluginId)) {
@@ -1475,7 +1533,7 @@ export class PluginRuntime {
       skillId: skill.id,
       ts: Date.now(),
     });
-    return { id: skill.id, name: skill.name, body: parsed.body };
+    return { id: skill.id, name: skill.name, body: parsed.body, location: skill.path };
   }
 
   getLoaded(pluginId: string): LoadedPlugin | undefined {
@@ -1762,6 +1820,7 @@ export class PluginRuntime {
   /** Abort this session's invocations without affecting sibling sessions. */
   cancelSessionTools(sessionId: string, reason = "Session tool execution aborted"): void {
     this.toolInvocations.cancelSession(sessionId, reason);
+    this.mcpCalls.cancelSession(sessionId);
   }
 
   /** Deregister contributions, run `onUnload` in the child, then stop it. */
@@ -1860,6 +1919,7 @@ export class PluginRuntime {
    * `onUnload` must never be the reason the app appears to hang on quit.
    */
   async disposeAll(): Promise<void> {
+    this.mcpCalls.cancelAll();
     const loadedPlugins = [...this.loaded.values()];
     // Mark first, in one pass: a child that dies while a sibling is still
     // stopping must already be covered by the guard in `handleChildExit`.
@@ -2720,7 +2780,20 @@ export class PluginRuntime {
     if (loaded.disposing) return;
     if (this.loaded.get(loaded.manifest.id) !== loaded) return;
     const pluginId = loaded.manifest.id;
-    this.rejectPending(loaded, apiError("PLUGIN_CRASHED", `plugin host process exited: ${pluginId}`));
+    // The exit code is the diagnosis for a crash report: a Windows hard fault
+    // (0xC0000005 and friends) and a plugin's own process.exit(1) are different
+    // bugs. Do not copy plugin stdout/stderr into user-visible errors or crash
+    // audit records because plugin output may contain workspace data or secrets.
+    const detail = childExitLabel(code);
+    const exitCode = childExitUnsigned(code);
+    const exitCodeHex = childExitHex(code);
+    this.rejectPending(
+      loaded,
+      apiError(
+        "PLUGIN_CRASHED",
+        `plugin host process exited: ${pluginId} (${detail})`,
+      ),
+    );
     this.clearContributions(pluginId);
     this.loaded.delete(pluginId);
     void this.services.closePanel(pluginId);
@@ -2729,12 +2802,18 @@ export class PluginRuntime {
       api: "plugin.crash",
       ok: false,
       errorCode: "PLUGIN_CRASHED",
-      exitCode: code,
+      exitCode,
+      ...(exitCodeHex ? { exitCodeHex } : {}),
       ts: Date.now(),
     });
     this.services.showToast(`Plugin stopped unexpectedly: ${loaded.manifest.name}`, "error");
-    this.services.onPluginCrash?.({ pluginId, name: loaded.manifest.name, exitCode: code });
-    this.superviseCrash(loaded);
+    this.services.onPluginCrash?.({
+      pluginId,
+      name: loaded.manifest.name,
+      exitCode,
+      ...(exitCodeHex ? { exitCodeHex } : {}),
+    });
+    this.superviseCrash(loaded, code);
   }
 
   /**
@@ -2742,14 +2821,14 @@ export class PluginRuntime {
    * with exponential backoff, and after `MAX_SERVICE_RESTARTS` leave the plugin
    * down rather than spin forever — the failed state is what the user sees.
    */
-  private superviseCrash(loaded: LoadedPlugin): void {
+  private superviseCrash(loaded: LoadedPlugin, code: number): void {
     const pluginId = loaded.manifest.id;
     const declared = this.declaredServices(loaded);
     if (!declared.length) return;
     const record = this.restarts.get(pluginId) ?? { attempts: 0 };
     if (record.healthy) clearTimeout(record.healthy);
     record.healthy = undefined;
-    this.markServices(loaded, "failed", record.attempts, "plugin host process exited");
+    this.markServices(loaded, "failed", record.attempts, `plugin host process exited (${childExitLabel(code)})`);
 
     const restartable =
       loaded.permissions.has("background.service") &&
@@ -3008,6 +3087,7 @@ export class PluginRuntime {
     // A gone plugin must stop serving its assets; the handler resolves through
     // this map only, so clearing it revokes every `plugin-asset:` URL at once.
     this.themeAssets.delete(pluginId);
+    this.themeAssetGroups.delete(pluginId);
     // Closing the client kills the stdio child / drops the HTTP session, so a
     // disabled plugin leaves no process behind.
     for (const client of this.mcpClients.get(pluginId) ?? []) {
@@ -3286,6 +3366,12 @@ export class PluginRuntime {
         this.themeAssets.set(pluginId, registry);
       }
       for (const [assetPath, absolute] of assets.files) registry.set(assetPath, absolute);
+      let assetGroups = this.themeAssetGroups.get(pluginId);
+      if (!assetGroups) {
+        assetGroups = new Map();
+        this.themeAssetGroups.set(pluginId, assetGroups);
+      }
+      assetGroups.set(themeId, new Map(assets.files));
       this.themes.set(id, {
         id,
         pluginId,
@@ -3461,7 +3547,11 @@ export class PluginRuntime {
           // Remote code the desktop cannot inspect; never silently auto-approved.
           risk: "medium",
           schema: tool.inputSchema,
-          execute: async (toolArgs) => client.callTool(tool.name, toolArgs),
+          execute: async (toolArgs, ctx) => this.mcpCalls.run(
+            ctx?.sessionId,
+            (signal) => client.callTool(tool.name, toolArgs, signal),
+            ctx?.signal,
+          ),
         });
       }
     }
@@ -4034,7 +4124,9 @@ export class PluginRuntime {
     payload?: Record<string, unknown>,
   ): Promise<unknown> {
     this.assertPermission(loaded, "browser.cdp");
-    const api = this.hostApi(loaded).browser;
+    const context = loaded.manifest.id === "pi.browser" && typeof payload?.sessionId === "string" && typeof payload?.tabId === "string"
+      ? { sessionId: payload.sessionId, tabId: payload.tabId } : undefined;
+    const api = this.hostApi(loaded, context).browser;
     switch (method) {
       case "navigate":
         return api.navigate({
@@ -4526,7 +4618,7 @@ export class PluginRuntime {
     throw apiError("UNSUPPORTED", `host api not available: ${api}`);
   }
 
-  private hostApi(loaded: LoadedPlugin) {
+  private hostApi(loaded: LoadedPlugin, browserContext?: { sessionId: string; tabId: string }) {
     const pluginId = loaded.manifest.id;
     const pluginPath = loaded.path;
 
@@ -5484,7 +5576,8 @@ export class PluginRuntime {
           }
           const result = await this.services.browser.navigate(
             input,
-            this.browserSessionId(pluginId),
+            browserContext?.sessionId ?? this.browserSessionId(pluginId),
+            browserContext?.tabId,
           );
           this.services.audit?.({
             pluginId,
@@ -5506,7 +5599,7 @@ export class PluginRuntime {
             action === "reload" ||
             action === "stop"
           ) {
-            this.services.browser.action(action);
+            this.services.browser.action(action, browserContext?.sessionId, browserContext?.tabId);
           }
         },
         setBounds: (hole: unknown) => {
@@ -5536,7 +5629,7 @@ export class PluginRuntime {
           if (!this.services.browser) {
             throw apiError("UNAVAILABLE", "browser host missing");
           }
-          this.services.browser.openExternal();
+          this.services.browser.openExternal(browserContext?.sessionId, browserContext?.tabId);
           this.services.audit?.({
             pluginId,
             api: "browser.openExternal",

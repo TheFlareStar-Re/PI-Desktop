@@ -7,7 +7,6 @@ import {
   useContext,
   useEffect,
   useId,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -29,7 +28,6 @@ import {
 } from "../../../lib/assistant-turns";
 import {
   delegationRoster,
-  delegationRosterOutcome,
   delegationRosterSummary,
   collectDelegationStatuses,
   collectDelegationTimings,
@@ -45,7 +43,7 @@ import {
   getToolAction,
   getToolSummary,
 } from "../../../lib/tool-display";
-import { ReviewChangeCard } from "../../../components/ReviewChangeCard";
+import { ReviewChangeCards } from "../../../components/ReviewChangeCard";
 import { IconChevronRight, IconCircleAlert, IconSparkles, IconWorkflow } from "../../../components/icons";
 import {
   DisclosureCollapseRail,
@@ -143,7 +141,7 @@ export function runActivityLabel(
       return t("chat.retryingModel", {
         delaySeconds: retryDelaySeconds(activity, now),
         attempt: activity.attempt,
-        maxAttempts: PROVIDER_RETRY_MAX_RETRIES,
+        maxAttempts: activity.infinite ? "∞" : PROVIDER_RETRY_MAX_RETRIES,
       });
     case "waiting-subagents":
       return waitingSubagentsLabel(activity, t);
@@ -359,12 +357,13 @@ export const ActivityGroup = memo(function ActivityGroup({
         return (
           <Fragment key={item.message.id}>
             <ToolRow
+              imagesInTurn
               message={item.message}
               autoOpen={autoOpenLatest}
               onUserInteraction={claimDisclosure}
               {...(item.delegate ? { delegate: item.delegate } : {})}
             />
-            <ReviewChangeCard message={item.message} />
+            <ReviewChangeCards message={item.message} />
           </Fragment>
         );
       }

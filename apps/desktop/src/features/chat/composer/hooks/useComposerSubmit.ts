@@ -9,11 +9,14 @@ import {
 } from "@pi-desktop/shared";
 import type { AppState } from "../../../../stores/app-store";
 import { useAppStore } from "../../../../stores/app-store";
-import type { ComposerDraftSnapshot } from "../../../../lib/composer-smart-stop";
 import { api } from "../../../../lib/api";
 import { draftKeyForSession } from "../../../../lib/composer-draft-cache";
 import { runExtensionCommand, runPaletteCommand } from "../../../../lib/commands";
 import { resolveComposerCommand } from "../../../../hooks/use-composer-autocomplete";
+import {
+  parseSlashSubmission,
+  resolveSlashDispatch,
+} from "../slash-dispatch";
 import { readEditorValue, setEditorCaret, type ComposerFileReference } from "../editor";
 import type { ComposerDraftController } from "./useComposerDraft";
 
@@ -36,6 +39,7 @@ type UseComposerSubmitOptions = {
     ComposerDraftController,
     | "ref"
     | "draftSnapshot"
+    | "draftRevision"
     | "clearDraftForKey"
     | "restoreDraftForKey"
     | "setValue"
@@ -203,18 +207,28 @@ export function useComposerSubmit({
     }
     invalidatePromptEnhancement();
     const submittedDraftKey = draftKey;
+    const submittedDraftRevision = draft.draftRevision(submittedDraftKey);
+    const submittedDraft = draft.draftSnapshot(text);
     // Slash dispatch stays local for builtin and extension commands, while
-    // templates, skills, and unknown aliases continue as normal prompt text.
-    if (!steering && serializedContent.startsWith("/")) {
-      const commandEnd = serializedContent.search(/\s/);
-      const name = serializedContent.slice(
-        1,
-        commandEnd === -1 ? undefined : commandEnd,
-      );
-      const command = name ? await resolveComposerCommand(name) : null;
-      if (command && command.kind !== "template" && command.id) {
-        const commandBody =
-          commandEnd === -1 ? "" : serializedContent.slice(commandEnd).trim();
+    // templates, skills, and unknown aliases continue as normal prompt text. A
+    // command source that cannot be read is a third case: the composer cannot
+    // prove `/compact` is not a builtin, so it refuses the submission and keeps
+    // the text out of the model's input (issue #795).
+    if (!steering) {
+      const slashSubmission = parseSlashSubmission(serializedContent);
+      const resolution = slashSubmission
+        ? await resolveComposerCommand(slashSubmission.name)
+        : null;
+      const dispatch = resolveSlashDispatch(slashSubmission, resolution);
+      if (dispatch.action === "blocked") {
+        showToast(t("chat.slashCommandSourceUnavailable"), {
+          variant: "error",
+        });
+        return;
+      }
+      if (dispatch.action === "dispatch") {
+        const command = dispatch.command;
+        const commandBody = dispatch.body;
         const isModeCommand =
           command.id === "builtin.mode.agent" ||
           command.id === "builtin.mode.plan" ||
@@ -235,7 +249,7 @@ export function useComposerSubmit({
               ),
               draft.draftSnapshot(visibleCommandBody),
             );
-            if (accepted) draft.clearDraftForKey(submittedDraftKey);
+            if (accepted) draft.clearDraftForKey(submittedDraftKey, submittedDraftRevision, submittedDraft);
           } catch (error) {
             showToast(error instanceof Error ? error.message : String(error), {
               variant: "error",
@@ -246,7 +260,7 @@ export function useComposerSubmit({
         if (command.kind === "extension") {
           try {
             await runExtensionCommand(command.name, commandBody);
-            draft.clearDraftForKey(submittedDraftKey);
+            draft.clearDraftForKey(submittedDraftKey, submittedDraftRevision, submittedDraft);
           } catch (error) {
             showToast(error instanceof Error ? error.message : String(error), {
               variant: "error",
@@ -258,7 +272,7 @@ export function useComposerSubmit({
           try {
             if (command.kind === "builtin") await runPaletteCommand(command.id);
             else await api.executeCommand(command.id);
-            draft.clearDraftForKey(submittedDraftKey);
+            draft.clearDraftForKey(submittedDraftKey, submittedDraftRevision, submittedDraft);
           } catch (error) {
             showToast(error instanceof Error ? error.message : String(error), {
               variant: "error",
@@ -272,8 +286,7 @@ export function useComposerSubmit({
       showToast(t("errors.MODEL_NOT_CONFIGURED"), { variant: "error" });
       return;
     }
-    const submittedDraft = draft.draftSnapshot(text);
-    draft.clearDraftForKey(submittedDraftKey);
+    draft.clearDraftForKey(submittedDraftKey, submittedDraftRevision, submittedDraft);
     const accepted = steering
       ? await steerPrompt(inlineContent, submittedDraft)
       : await sendPrompt(inlineContent, submittedDraft);

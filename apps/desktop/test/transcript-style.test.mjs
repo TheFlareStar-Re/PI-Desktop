@@ -126,8 +126,9 @@ test("tool details do not add a second visual indent", () => {
  * The width regression this guards: a content-sized `inline-flex` disclosure
  * header stopped at its own label, so a tool call never used the conversation
  * width — it stayed narrower than the prose, ignored the dragged band width,
- * and let a long label overrun the chip. The header row now claims the band at
- * every level, the label ellipsizes, and the caret trails the row.
+ * and let a long label overrun the chip. Tool headers claim the band; the
+ * whole-turn summary is content-sized independently of its detail rows.
+ * Labels ellipsize and the caret trails the header.
  */
 test("tool-call disclosure headers span the conversation band", () => {
   const header = stylesSource.match(/\n\.tool-activity-header \{([^}]*)\}/)?.[1];
@@ -148,11 +149,10 @@ test("tool-call disclosure headers span the conversation band", () => {
   assert.ok(caret);
   assert.match(caret, /margin-inline-start:\s*auto;/);
 
-  // No level keeps its own width or label override: every disclosure header
-  // resolves through the single base row.
+  // Nested activity headers retain the base width; turn summaries may shrink.
   assert.doesNotMatch(
     stylesSource,
-    /\.(process-activity-group|turn-process) > \.tool-activity-header[^{]*\{[^}]*width:/,
+    /\.process-activity-group > \.tool-activity-header[^{]*\{[^}]*width:/,
   );
   assert.doesNotMatch(
     stylesSource,
@@ -164,6 +164,45 @@ test("tool-call disclosure headers span the conversation band", () => {
   assert.ok(row);
   assert.match(row, /width:\s*100%;/);
   assert.match(row, /min-width:\s*0;/);
+});
+
+test("delegation node copy wraps within the responsive card", () => {
+  const metrics = stylesSource.match(
+    /\.subagent-activity-metrics \{([^}]*)\}/,
+  )?.[1];
+  assert.ok(metrics);
+  assert.match(metrics, /overflow-wrap:\s*anywhere;/);
+  assert.match(metrics, /white-space:\s*normal;/);
+
+  const titleRow = stylesSource.match(
+    /\.subagent-topology-node-title-row \{([^}]*)\}/,
+  )?.[1];
+  assert.ok(titleRow);
+  assert.match(titleRow, /flex-wrap:\s*wrap;/);
+
+  const title = stylesSource.match(
+    /\.subagent-topology-node-title \{([^}]*)\}/,
+  )?.[1];
+  assert.ok(title);
+  assert.match(title, /-webkit-line-clamp:\s*2;/);
+  assert.match(title, /overflow-wrap:\s*anywhere;/);
+  assert.match(title, /white-space:\s*normal;/);
+  assert.doesNotMatch(title, /white-space:\s*nowrap;/);
+
+  const summary = stylesSource.match(
+    /\.subagent-topology-node-summary \{([^}]*)\}/,
+  )?.[1];
+  assert.ok(summary);
+  assert.match(summary, /-webkit-line-clamp:\s*2;/);
+  assert.match(summary, /overflow-wrap:\s*anywhere;/);
+  assert.match(summary, /white-space:\s*normal;/);
+
+  const steps = stylesSource.match(
+    /\.subagent-topology-node-steps \{([^}]*)\}/,
+  )?.[1];
+  assert.ok(steps);
+  assert.match(steps, /overflow-wrap:\s*anywhere;/);
+  assert.match(steps, /white-space:\s*normal;/);
 });
 
 test("assistant turns stay transparent full-width prose", () => {
@@ -194,6 +233,31 @@ test("assistant turns stay transparent full-width prose", () => {
     /\.tool-activity-group\.has-subagents\s*\{[^}]*background:\s*var\(--ds-tile\)/,
   );
 });
+test("assistant error cards follow the responsive transcript column", () => {
+  const errorCard = stylesSource.match(/\n\.message-error \{([^}]*)\}/)?.[1];
+  assert.ok(errorCard);
+  assert.match(errorCard, /width:\s*100%;/);
+  assert.doesNotMatch(errorCard, /max-width\s*:/);
+  assert.match(
+    stylesSource,
+    /\.message-row\.assistant \.message-col,\s*\.message-row\.system \.message-col,\s*\.message-row\.tool \.message-col \{\s*width:\s*min\(100%,\s*var\(--chat-prose-max-width,\s*720px\)\);/,
+  );
+});
+
+test("decision and outcome cards follow the responsive transcript band", () => {
+  const cardRules = [
+    stylesSource.match(/\n\.permission-card \{([^}]*)\}/)?.[1],
+    stylesSource.match(/\n\.asktool-card \{([^}]*)\}/)?.[1],
+    stylesSource.match(/\n\.turn-outcome-card \{([^}]*)\}/)?.[1],
+  ];
+  for (const rule of cardRules) {
+    assert.ok(rule);
+    assert.match(
+      rule,
+      /width:\s*min\(100%,\s*var\(--chat-prose-max-width,\s*720px\)\);/,
+    );
+  }
+});
 
 test("transcript density and hover actions are quiet", () => {
   assert.match(stylesSource, /\.message-row \{[\s\S]*?padding:\s*12px 0;/);
@@ -204,6 +268,10 @@ test("transcript density and hover actions are quiet", () => {
   assert.match(
     stylesSource,
     /\.message-actions \{[\s\S]*?opacity:\s*0;[\s\S]*?\.message-row:hover \.message-actions/,
+  );
+  assert.match(
+    stylesSource,
+    /html\.pointer-outside \.message-row:hover \.message-actions:not\(:focus-within\),\s*html\.pointer-outside \.message-actions:not\(:focus-within\)/,
   );
   assert.match(stylesSource, /\.message-row\.user \.message-actions \{[\s\S]*?justify-content:\s*flex-end;/);
 });
@@ -396,7 +464,7 @@ test("assistant context inspector keeps a compact summary and retry action wired
   assert.match(inspectorSource, /contextOccupancyTokens\(usage\)/);
   assert.match(inspectorSource, /usage\.cacheReadTokens/);
   assert.doesNotMatch(inspectorSource, /turnUsage\.cacheReadTokens/);
-  assert.match(inspectorSource, /createPortal\(popover, document\.body\)/);
+  assert.match(inspectorSource, /portalToBody\(popover\)/);
   assert.match(inspectorSource, /getBoundingClientRect\(\)/);
   assert.match(inspectorSource, /addEventListener\("scroll", handleViewportChange, true\)/);
   assert.match(inspectorSource, /ResizeObserver\(updatePopoverPosition\)/);
@@ -563,4 +631,25 @@ test("regenerate history pager and stable revision family are wired", async () =
   );
   assert.match(sharedSource, /revisionRootId\?: string/);
   assert.match(sharedSource, /MessageRevisionSummary/);
+});
+
+test("turn headers stay short in both states without narrowing detail rows", () => {
+  assert.match(stylesSource, /\.turn-process > \.tool-activity-header\s*\{\s*width: fit-content;\s*max-width: 100%;/);
+  assert.doesNotMatch(stylesSource, /\.turn-process:not\(\.open\) > \.tool-activity-header/);
+  assert.match(stylesSource, /\.tool-activity-header\s*\{\s*display: flex;\s*width: 100%;/);
+});
+
+test("partial tail pages absorb underfilled space above their content without a scroll spacer", () => {
+  const scroller = stylesSource.match(/\.thread-scroll\[data-tail-aligned="true"\]\s*\{([^}]*)\}/)?.[1];
+  const content = stylesSource.match(/\.thread-scroll\[data-tail-aligned="true"\] > \.thread-content\s*\{([^}]*)\}/)?.[1];
+  assert.ok(scroller);
+  assert.ok(content);
+  assert.match(scroller, /display:\s*flex;/);
+  assert.match(scroller, /flex-direction:\s*column;/);
+  assert.match(content, /flex:\s*0 0 auto;/);
+  assert.match(content, /margin-top:\s*auto;/);
+  assert.doesNotMatch(scroller + content, /min-height|padding|justify-content:\s*flex-end/);
+  assert.match(transcriptSource, /data-tail-aligned=\{alignHistoryTail \|\| undefined\}/);
+  assert.match(transcriptSource, /const alignHistoryTail = !readingWindow && hasMoreBefore/);
+  assert.doesNotMatch(transcriptSource, /tailAlignedRef/);
 });

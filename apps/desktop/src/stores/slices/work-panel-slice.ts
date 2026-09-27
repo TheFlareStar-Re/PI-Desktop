@@ -1,16 +1,24 @@
+import { buildTranscriptEntries } from "../../lib/assistant-turns";
+import { summarizeTurnFileChanges } from "../../lib/turn-file-summary";
+import { transcriptViewMessages } from "../../lib/transcript-reading";
 import { api } from "../../lib/api";
 import {
   activateWorkPanelTabState,
   browserPluginTab,
+  browserTabLabel,
   closeWorkPanelTabState,
   emptyWorkPanelContext,
   fileWorkPanelTab,
   newWorkPanelTab,
   openWorkPanelTabState,
+  reorderWorkPanelTabsState,
   replaceWorkPanelTabState,
   sanitizeWorkPanelTabsState,
+  subagentWorkPanelTab,
   switchWorkPanelContextState,
+  toolWorkPanelTab,
   type WorkPanelContext,
+  type WorkPanelReviewSelection,
   type WorkPanelTab,
 } from "../../lib/work-panel-tabs";
 import {
@@ -52,11 +60,15 @@ export function currentWorkPanelContext(state: AppState): WorkPanelContext {
     tabs: state.workPanelTabs,
     activeTabId: state.activeWorkPanelTabId,
   });
+  const reviewSelection = state.activeSessionId
+    ? state.workPanelContexts[state.activeSessionId]?.reviewSelection
+    : undefined;
   return {
     open: state.workPanelOpen,
     tabs: tabs.tabs,
     activeTabId: tabs.activeTabId,
     fileRequest: state.workPanelFileRequest,
+    ...(reviewSelection ? { reviewSelection } : {}),
   };
 }
 
@@ -96,40 +108,32 @@ export function createWorkPanelSlice({
   isSessionSelectionPending,
 }: WorkPanelSliceDependencies): Pick<
   AppState,
-  "toggleSubagentPanel"
-  | "closeSubagentPanel"
+  "openSubagentTab"
   | "openWorkPanel"
   | "toggleWorkPanel"
   | "openWorkPanelTab"
   | "openNewWorkPanelTab"
   | "replaceWorkPanelTab"
   | "openWorkPanelTabForSession"
+  | "resetWorkPanelContext"
   | "activateWorkPanelTab"
+  | "reorderWorkPanelTabs"
   | "closeWorkPanelTab"
   | "collapseWorkPanel"
-  | "resetWorkPanelContext"
   | "setWorkPanelWidth"
   | "openFileInWorkPanel"
   | "openUrlInWorkPanel"
+  | "openTurnFileReview"
+  | "updateBrowserWorkPanelTab"
 > {
   let workPanelFileRequestSeq = 0;
 
   return {
-  toggleSubagentPanel: (delegationId) => {
-    const state = get();
-    const sessionId = state.activeSessionId;
+  openSubagentTab: (delegationId, agentName) => {
     const id = delegationId.trim();
-    if (!sessionId || !id) return;
-    if (
-      state.subagentPanel?.sessionId === sessionId &&
-      state.subagentPanel.delegationId === id
-    ) {
-      set({ subagentPanel: null });
-      return;
-    }
-    set({ subagentPanel: { sessionId, delegationId: id } });
+    if (!id) return;
+    get().openWorkPanelTab(subagentWorkPanelTab(id, agentName || undefined));
   },
-  closeSubagentPanel: () => set({ subagentPanel: null }),
 
   openWorkPanel: () => {
     const state = get();
@@ -147,11 +151,6 @@ export function createWorkPanelSlice({
 
   toggleWorkPanel: () => {
     const state = get();
-    if (state.subagentPanel) {
-      state.closeSubagentPanel();
-      if (get().workPanelOpen) get().collapseWorkPanel();
-      return;
-    }
     if (state.workPanelOpen) {
       state.collapseWorkPanel();
       return;
@@ -184,6 +183,7 @@ export function createWorkPanelSlice({
             }
           : context.fileRequest;
       const nextContext: WorkPanelContext = {
+        ...context,
         open: true,
         tabs: next.tabs,
         activeTabId: next.activeTabId,
@@ -237,6 +237,10 @@ export function createWorkPanelSlice({
             }
           : state.workPanelFileRequest;
       const nextContext: WorkPanelContext = {
+        ...currentWorkPanelContext(state),
+        reviewSelection: next.tabs.some((item) => item.kind === "review")
+          ? state.workPanelContexts[sessionId]?.reviewSelection
+          : undefined,
         open: true,
         tabs: next.tabs,
         activeTabId: next.activeTabId,
@@ -275,6 +279,7 @@ export function createWorkPanelSlice({
             }
           : state.workPanelFileRequest;
       const nextContext: WorkPanelContext = {
+        ...currentWorkPanelContext(state),
         open: state.workPanelOpen,
         tabs: next.tabs,
         activeTabId: next.activeTabId,
@@ -290,7 +295,42 @@ export function createWorkPanelSlice({
       };
     });
   },
+  reorderWorkPanelTabs: (sourceTabId, targetTabId, insertAfter) => {
+    set((state) => {
+      const sessionId = state.activeSessionId;
+      if (!sessionId) return {};
+      const next = reorderWorkPanelTabsState(
+        {
+          tabs: state.workPanelTabs,
+          activeTabId: state.activeWorkPanelTabId,
+        },
+        sourceTabId,
+        targetTabId,
+        insertAfter,
+      );
+      if (next.tabs === state.workPanelTabs) return {};
+      const nextContext: WorkPanelContext = {
+        open: state.workPanelOpen,
+        tabs: next.tabs,
+        activeTabId: next.activeTabId,
+        fileRequest: state.workPanelFileRequest,
+      };
+      return {
+        workPanelTabs: next.tabs,
+        activeWorkPanelTabId: next.activeTabId,
+        workPanelContexts: {
+          ...state.workPanelContexts,
+          [sessionId]: nextContext,
+        },
+      };
+    });
+  },
   closeWorkPanelTab: (tabId) => {
+    const current = get();
+    if (current.activeSessionId && current.workPanelTabs.some((tab) => tab.id === tabId && tab.resource === "pi.browser/browser")) {
+      void api.pluginViewClose("pi.browser", "browser", { sessionId: current.activeSessionId, tabId })
+        .catch((error) => get().showToast(String(error), { variant: "error" }));
+    }
     set((state) => {
       const sessionId = state.activeSessionId;
       if (!sessionId) return {};
@@ -311,6 +351,10 @@ export function createWorkPanelSlice({
             }
           : state.workPanelFileRequest;
       const nextContext: WorkPanelContext = {
+        ...currentWorkPanelContext(state),
+        reviewSelection: next.tabs.some((item) => item.kind === "review")
+          ? state.workPanelContexts[sessionId]?.reviewSelection
+          : undefined,
         // Closing the final tab leaves the panel open so the user can choose
         // another tool from the new-tab launcher instead of losing the dock.
         open: state.workPanelOpen,
@@ -356,8 +400,86 @@ export function createWorkPanelSlice({
     saveWorkPanelWidth(get().workPanelWidth);
   },
 
+  openTurnFileReview: (selection) => {
+    const state = get();
+    if (
+      !selection.sessionId ||
+      state.activeSessionId !== selection.sessionId ||
+      isSessionSelectionPending(selection.sessionId) ||
+      !selection.selectedPath ||
+      selection.snapshotIds.length === 0
+    ) {
+      return;
+    }
+    // Validate against the same loaded reading range and visual boundaries as
+    // ChatTranscript; the live tail alone can omit history or merge checkpoints.
+    const messages = transcriptViewMessages(
+      state.messages,
+      state.transcriptViews[selection.sessionId],
+    );
+    const turn = buildTranscriptEntries(
+      messages,
+      state.sessionCompactions[selection.sessionId],
+    ).entries.find(
+      (entry) => entry.kind === "assistant-turn" && entry.id === selection.turnId,
+    );
+    if (turn?.kind !== "assistant-turn") return;
+    const file = summarizeTurnFileChanges(turn).files.find(
+      (candidate) => candidate.path === selection.selectedPath,
+    );
+    if (!file) return;
+    const requestedIds = new Set(selection.snapshotIds);
+    const availableIds = new Set(
+      file.entries
+        .map(({ change }) => change.snapshotId)
+        .filter((snapshotId) => requestedIds.has(snapshotId)),
+    );
+    if (availableIds.size !== requestedIds.size) return;
+    const context = currentWorkPanelContext(state);
+    const next = openWorkPanelTabState(
+      { tabs: context.tabs, activeTabId: context.activeTabId },
+      toolWorkPanelTab("review"),
+    );
+    const previousRevision = context.reviewSelection?.revision ?? 0;
+    const reviewSelection: WorkPanelReviewSelection = {
+      ...selection,
+      snapshotIds: [...selection.snapshotIds],
+      revision: previousRevision + 1,
+    };
+    const nextContext: WorkPanelContext = {
+      ...context,
+      open: true,
+      tabs: next.tabs,
+      activeTabId: next.activeTabId,
+      reviewSelection,
+    };
+    set({
+      workPanelOpen: true,
+      workPanelTabs: next.tabs,
+      activeWorkPanelTabId: next.activeTabId,
+      workPanelContexts: {
+        ...state.workPanelContexts,
+        [selection.sessionId]: nextContext,
+      },
+    });
+  },
+
   openFileInWorkPanel: (path, mimeType) => {
     get().openWorkPanelTab(fileWorkPanelTab(path, mimeType));
+  },
+  updateBrowserWorkPanelTab: (event) => {
+    const sessionId = event.sessionId;
+    if (!sessionId || !event.tabId || !event.url) return;
+    set((state) => {
+      const visible = state.activeSessionId === sessionId && !isSessionSelectionPending(sessionId);
+      const context = visible ? currentWorkPanelContext(state) : state.workPanelContexts[sessionId];
+      if (!context || !context.tabs.some((tab) => tab.id === event.tabId && tab.resource === "pi.browser/browser")) return {};
+      const tabs = context.tabs.map((tab) => tab.id === event.tabId
+        ? { ...tab, location: event.url, label: !event.isLoading && !event.loadError && event.title ? event.title : browserTabLabel(event.url) }
+        : tab);
+      return { ...(visible ? { workPanelTabs: tabs } : {}),
+        workPanelContexts: { ...state.workPanelContexts, [sessionId]: { ...context, tabs } } };
+    });
   },
   openUrlInWorkPanel: (url) => {
     const hasBrowser = get().pluginViews.some(

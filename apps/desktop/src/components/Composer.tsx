@@ -12,7 +12,9 @@ import type {
 } from "@pi-desktop/shared";
 import {
   initialThinkingLevelForBinding,
-  modelIdsMatch,
+  initialThinkingLevelForUnmatchedModel,
+  imageGenerationBindings,
+  isImageGenerationModel,
   normalizeLargePasteThreshold,
   stripInlineComposerFileReferenceTokens,
 } from "@pi-desktop/shared";
@@ -21,12 +23,8 @@ import { latestTurnContextInspector } from "../lib/latest-turn-context";
 import { isActivePlanExecution } from "../lib/plan-mode-state";
 import { headAsk, queuedAskCount } from "../lib/pending-asks";
 import type { QueuedPrompt } from "../lib/queued-prompts";
+import { composerModelDisplayName, sameComposerModelId } from "../lib/composer-models";
 import {
-  composerModelDisplayName,
-  composerModelsForProvider,
-} from "../lib/composer-models";
-import {
-  providerThinkingLevels,
   resolveComposerThinkingProvider,
 } from "../lib/session-thinking";
 import {
@@ -44,7 +42,6 @@ import {
   isThinkingLevel,
   thinkingLevelForProvider,
   thinkingProviderForModel,
-  THINKING_LEVELS,
   type ComposerPrefill,
 } from "../features/chat/composer/model";
 import {
@@ -55,11 +52,15 @@ import {
 } from "../features/chat/composer/editor";
 import { useComposerAttachments } from "../features/chat/composer/hooks/useComposerAttachments";
 import { useComposerDraft } from "../features/chat/composer/hooks/useComposerDraft";
+import { useComposerDockHeight } from "../features/chat/composer/hooks/useComposerDockHeight";
 import { useComposerSubmit } from "../features/chat/composer/hooks/useComposerSubmit";
 import { ComposerImageAttachments } from "../features/chat/composer/ComposerImageAttachments";
 import { ComposerInput } from "../features/chat/composer/ComposerInput";
 import { useComposerModelMenu } from "../features/chat/composer/hooks/useComposerModelMenu";
 import { ComposerToolbar } from "../features/chat/composer/ComposerToolbar";
+import { useVoiceInput } from "../features/voice/useVoiceInput";
+import { VoiceOverlay } from "../features/voice/VoiceOverlay";
+import "../styles/voice.css";
 import { ComposerStatus } from "../features/chat/composer/ComposerStatus";
 
 const EMPTY_QUEUED_PROMPTS: QueuedPrompt[] = [];
@@ -91,6 +92,10 @@ export function Composer({
     s.activeSessionId ? s.planningStates[s.activeSessionId] : undefined,
   );
   const settings = useAppStore((s) => s.settings);
+  const imageGenerationCandidates = useMemo(
+    () => imageGenerationBindings(settings?.imageGenerationModels, settings?.imageGeneration),
+    [settings?.imageGenerationModels, settings?.imageGeneration],
+  );
   const sessions = useAppStore((s) => s.sessions);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const activeSessionSummary = sessions.find(
@@ -140,8 +145,6 @@ export function Composer({
   const [permissionOpen, setPermissionOpen] = useState(false);
   const enhancementInvalidateRef = useRef<() => void>(() => {});
   const composerShellRef = useRef<HTMLDivElement>(null);
-  const dockRef = useRef<HTMLDivElement>(null);
-  const publishedDockHeightRef = useRef(-1);
 
   const invalidatePromptEnhancement = () => {
     enhancementInvalidateRef.current();
@@ -178,6 +181,7 @@ export function Composer({
     applyEditorDraft,
     snapshotReferences,
     draftSnapshot,
+    draftRevision,
     clearDraftForKey,
     restoreDraftForKey,
     persistDraft,
@@ -333,8 +337,7 @@ export function Composer({
   const modelId =
     activeSession?.modelId ??
     (!activeSession ? draftConfiguration?.modelId : undefined) ??
-    settings?.defaultModelId ??
-    provider?.defaultModelId;
+    (settings?.defaultModelId?.trim() || provider?.models?.[0]?.id || provider?.defaultModelId);
   const selectedModelCatalog = provider ? providerModels[provider.id] : undefined;
   const catalogThinkingProvider = thinkingProviderForModel(
     provider,
@@ -348,14 +351,22 @@ export function Composer({
     catalogThinkingProvider,
   });
   const selectedBinding = provider?.models.find((candidate) =>
-    modelIdsMatch(candidate.id, modelId ?? ""),
+    sameComposerModelId(candidate.id, modelId ?? ""),
+  );
+  const selectedModelInfo = selectedModelCatalog?.find((candidate) =>
+    sameComposerModelId(candidate.modelId, modelId ?? ""),
   );
   // A draft without a session starts at the selected model's stored default
   // thinking level, clamped onto that binding's enabled ladder.
-  const draftThinkingLevel = initialThinkingLevelForBinding(
-    selectedBinding,
-    thinkingProvider?.supportedThinkingLevels,
-  );
+  const draftThinkingLevel = selectedModelInfo
+    ? initialThinkingLevelForBinding(
+        selectedBinding,
+        thinkingProvider?.supportedThinkingLevels,
+      )
+    : initialThinkingLevelForUnmatchedModel(
+        selectedBinding,
+        thinkingProvider?.supportedThinkingLevels,
+      );
   const sessionThinkingLevel =
     activeSession?.thinkingLevel ??
     (!activeSession ? draftConfiguration?.thinkingLevel : undefined) ??
@@ -363,21 +374,16 @@ export function Composer({
   const configuredThinkingLevel = isThinkingLevel(sessionThinkingLevel)
     ? sessionThinkingLevel
     : "off";
-  const availableThinkingLevels = providerThinkingLevels(thinkingProvider);
   const thinkingLevel = thinkingLevelForProvider(
     thinkingProvider,
     configuredThinkingLevel,
   );
   const thinkingLabel = thinkingLevel;
-  const selectedModel = provider?.id
-    ? composerModelsForProvider(provider, providerModels[provider.id]).find(
-        (model) => modelIdsMatch(model.modelId, modelId ?? ""),
-      )
-    : undefined;
-  const modelLabel = provider && modelId
-    ? composerModelDisplayName(provider, modelId, selectedModel?.displayName)
-    : selectedModel?.displayName || modelId || t("chat.model");
+  const modelLabel = modelId
+    ? composerModelDisplayName(provider, modelId, selectedModelInfo?.displayName)
+    : t("chat.model");
   const modelMenu = useComposerModelMenu({
+    configureActiveSession,
     mode,
     activeSessionId,
     provider,
@@ -391,6 +397,7 @@ export function Composer({
     : !!provider &&
       provider.enabled &&
       !!modelId &&
+      !isImageGenerationModel(imageGenerationCandidates, provider.id, modelId) &&
       (provider.hasSecret || provider.authKind === "none");
   const enterToSend = settings?.enterToSend ?? true;
   const hasDraftContent = Boolean(value.trim() || activeFileReferences.length);
@@ -418,6 +425,7 @@ export function Composer({
     draft: {
       ref,
       draftSnapshot,
+      draftRevision,
       clearDraftForKey,
       restoreDraftForKey,
       setValue,
@@ -434,6 +442,21 @@ export function Composer({
     undoPromptEnhancement,
     submit,
   } = submitController;
+
+  const voiceEnabled = !!settings?.voice?.enabled;
+  const voice = useVoiceInput({
+    enabled: voiceEnabled,
+    onTranscriptionComplete: (text) => {
+      // Insert transcribed text into Composer
+      const current = readLiveDraft();
+      if (!current.trim()) {
+        applyEditorDraft(text, fileReferencesRef.current, text.length);
+      } else {
+        const next = current + " " + text;
+        applyEditorDraft(next, fileReferencesRef.current, next.length);
+      }
+    },
+  });
 
   const composerAc = useComposerAutocomplete({
     value,
@@ -475,29 +498,7 @@ export function Composer({
     );
   };
 
-  // Keep the transcript's bottom reserve in sync with the composer's real
-  // height (it grows with multi-line input) so the last message sits just
-  // above the box instead of far below it.
-  useEffect(() => {
-    const el = dockRef.current;
-    if (!el) return;
-    // Setting a custom property on documentElement invalidates style for the
-    // whole document, so an unchanged dock height must not be republished.
-    const publish = () => {
-      const h = Math.round(el.getBoundingClientRect().height);
-      if (h === publishedDockHeightRef.current) return;
-      publishedDockHeightRef.current = h;
-      document.documentElement.style.setProperty(
-        "--composer-dock-height",
-        `${h}px`,
-      );
-    };
-    publish();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(publish);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [variant]);
+  const dockRef = useComposerDockHeight(variant);
 
   return (
     <div
@@ -510,7 +511,7 @@ export function Composer({
           <PlanApprovalBar proposal={planCheckpoint} />
         ) : null}
         {pendingAsk ? (
-          <AskToolCard request={pendingAsk} queued={queuedAsks} />
+          <AskToolCard key={pendingAsk.requestId} request={pendingAsk} queued={queuedAsks} />
         ) : null}
         {nativeReadOnly ? (
           <div className="composer-status" role="status">
@@ -577,6 +578,7 @@ export function Composer({
               persistDraft();
             }}
           />
+          <VoiceOverlay t={t} state={voice.state} onCancel={voice.cancel} />
           <ComposerToolbar
             t={t}
             mode={mode}
@@ -604,11 +606,14 @@ export function Composer({
             enhancementUndoText={enhancementUndoText}
             enhancePrompt={enhancePrompt}
             undoPromptEnhancement={undoPromptEnhancement}
-            clearEnhancementError={clearEnhancementError}
             runActive={runActive}
             hasDraftContent={hasDraftContent}
             abort={abort}
             submit={submit}
+            voicePhase={voice.state.phase}
+            voiceEnabled={voiceEnabled}
+            onVoiceToggle={voice.toggle}
+            onVoiceCancel={voice.cancel}
           />
         </div>
       </div>

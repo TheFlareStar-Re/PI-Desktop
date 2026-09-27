@@ -26,12 +26,11 @@ const MAX_HIGHLIGHT_BYTES = 100_000;
 const MAX_HIGHLIGHT_LINES = 800;
 /** Rendered list caps; the remainder is reported, never silently dropped. */
 const MAX_LIST_ITEMS = 200;
-const MAX_DIFF_LINES = 400;
 const DIFF_CONTEXT_LINES = 2;
 /** Longer single-line strings become their own block instead of a field row. */
 const MAX_FIELD_VALUE = 120;
-/** Internal review snapshots are rendered by ReviewChangeCard, not as fields. */
-const HIDDEN_KEYS = new Set(["review"]);
+/** Internal review evidence is rendered by ReviewChangeCard, not as fields. */
+const HIDDEN_KEYS = new Set(["review", "reviews", "reviewCapture"]);
 
 export type ToolPresentationMessage = {
   role?: string;
@@ -333,20 +332,6 @@ export function buildDiffLines(
     lines.push({ type: "context", text: oldLines[i] });
   }
   return lines;
-}
-
-function diffBlock(oldText: string, newText: string): ToolBlock | null {
-  const lines = buildDiffLines(oldText, newText);
-  if (!lines.some((line) => line.type !== "context")) return null;
-  const sign = (line: ToolDiffLine) =>
-    line.type === "add" ? "+" : line.type === "del" ? "-" : " ";
-  return {
-    kind: "diff",
-    role: "diff",
-    lines: lines.slice(0, MAX_DIFF_LINES),
-    hidden: Math.max(0, lines.length - MAX_DIFF_LINES),
-    copy: lines.map((line) => `${sign(line)}${line.text}`).join("\n"),
-  };
 }
 
 function filesBlock(paths: string[], label?: string): ToolBlock | null {

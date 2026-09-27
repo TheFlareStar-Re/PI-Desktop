@@ -1,3 +1,4 @@
+mod config_sync_rpc;
 mod scheduled_rpc;
 mod scheduled_tools;
 
@@ -312,6 +313,23 @@ pub async fn serve(state: Arc<Mutex<AppState>>) -> Result<()> {
             return Err(anyhow!("host stdin reader unavailable: {error}"));
         }
     };
+    let config_sync_scheduler = tokio::spawn({
+        let state = state.clone();
+        let tx = tx.clone();
+        async move {
+            // The host owns a short local debounce clock; remote polling is
+            // gated inside the engine to five minutes when no local change is
+            // pending. This lets a quiet app settle filesystem edits without
+            // turning every tick into a WebDAV request.
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let _ =
+                    crate::config_sync::engine::sync_if_enabled(state.clone(), tx.clone()).await;
+            }
+        }
+    });
 
     let mut input_error = None;
     let mut writer_done = false;
@@ -435,6 +453,8 @@ pub async fn serve(state: Arc<Mutex<AppState>>) -> Result<()> {
         }
     }
 
+    config_sync_scheduler.abort();
+    let _ = config_sync_scheduler.await;
     {
         let mut st = state.lock().await;
         st.shutdown();
@@ -471,10 +491,32 @@ fn rpc_err(code: i64, message: impl Into<String>, error_code: &str) -> JsonRpcEr
     }
 }
 
+fn config_sync_rpc_err(error: impl ToString) -> JsonRpcError {
+    let message = error.to_string();
+    let error_code = message
+        .split_once(':')
+        .map(|(code, _)| code.trim())
+        .unwrap_or("INTERNAL")
+        .to_string();
+    let code = match error_code.as_str() {
+        "CONFIG_SYNC_INVALID" | "CONFIG_SYNC_LIMIT_EXCEEDED" => 1002,
+        "CONFIG_SYNC_LOCKED" => 1001,
+        "CONFIG_SYNC_CONFLICT" => 1008,
+        "CONFIG_SYNC_UNSUPPORTED" => 1002,
+        "CONFIG_SYNC_SECURITY" => 1003,
+        "CONFIG_SYNC_CRYPTO" | "CONFIG_SYNC_MAPPING_REQUIRED" => 1002,
+        "CONFIG_SYNC_REMOTE" => 1000,
+        _ => 1000,
+    };
+    rpc_err(code, message, &error_code)
+}
+
 fn provider_rpc_err(error: impl ToString) -> JsonRpcError {
     let message = error.to_string();
-    if message.starts_with("MODEL_ALIAS_TOO_LONG:") {
-        return rpc_err(1002, message, "MODEL_ALIAS_TOO_LONG");
+    for error_code in ["MODEL_ALIAS_TOO_LONG", "MODEL_BINDINGS_DEGRADED"] {
+        if message.starts_with(&format!("{error_code}:")) {
+            return rpc_err(1002, message, error_code);
+        }
     }
     rpc_err(1000, message, "INTERNAL")
 }
@@ -637,6 +679,37 @@ fn normalize_settings_value(mut value: Value) -> Value {
                 Value::Number(DEFAULT_LARGE_PASTE_THRESHOLD.into()),
             );
         }
+        // The network policy replaced three per-feature switches. A section that
+        // is present is written back in the shape
+        // `packages/shared/src/network-policy.ts` defines: a usable `mode`, plus
+        // the one-time notice flag when it is set. Anything unusable falls back
+        // to the documented default, `relaxed`; the plaintext flag of a build
+        // before the mode existed survives as `strict`, because its `false` was
+        // the user's own answer.
+        let stored_policy = object
+            .get("networkPolicy")
+            .filter(|value| !value.is_null())
+            .cloned();
+        if let Some(stored_policy) = stored_policy {
+            let policy = stored_policy.as_object().cloned().unwrap_or_default();
+            let mode = match policy.get("mode").and_then(Value::as_str) {
+                Some("relaxed") => "relaxed",
+                Some("strict") => "strict",
+                _ => {
+                    if policy.get("allowInsecureUserEndpoints") == Some(&Value::Bool(false)) {
+                        "strict"
+                    } else {
+                        "relaxed"
+                    }
+                }
+            };
+            let mut next = serde_json::Map::new();
+            next.insert("mode".into(), Value::String(mode.into()));
+            if policy.get("insecureNoticeAcknowledged") == Some(&Value::Bool(true)) {
+                next.insert("insecureNoticeAcknowledged".into(), Value::Bool(true));
+            }
+            object.insert("networkPolicy".into(), Value::Object(next));
+        }
         // A blank override means "use the built-in default", and an unusable
         // one (wrong type, oversized, or a user template without the draft
         // variable) falls back to the default too, rather than leaving a
@@ -672,6 +745,63 @@ fn merge_settings_value(stored: Option<Value>, incoming: Value) -> Value {
     Value::Object(merged)
 }
 
+/// Drop image-generation bindings whose provider row is gone.
+///
+/// `settings.set` merges into the stored object and the shell writes whole
+/// snapshots back, so deleting a provider row used to leave `imageGeneration`
+/// naming an id that no longer resolves. Every `GenerateImages` call then
+/// answered `IMAGE_MODEL_UNAVAILABLE`, and once the candidate list was empty
+/// the settings row that owns the default hid itself, so the binding could
+/// neither run nor be repaired from the UI. A binding that cannot resolve is
+/// therefore not a preference the store keeps: the active default falls back
+/// to "no default" and the candidate list loses that entry, on read and on
+/// write alike. A provider that still exists but is disabled or carries no
+/// credential keeps its binding — that is a state the user repairs in
+/// Settings, and no reference to it is dropped here.
+///
+/// The same rule config sync already enforces when it applies a bundle
+/// (`validate_application_references`), applied to the local settings channel
+/// so a stale id cannot be written into or read out of the store.
+fn prune_unresolvable_image_bindings(
+    db: &crate::db::Database,
+    settings: &mut Value,
+) -> Result<bool> {
+    let Some(object) = settings.as_object_mut() else {
+        return Ok(false);
+    };
+    let resolves = |binding: &Value| -> Result<bool> {
+        match binding.get("providerId").and_then(Value::as_str) {
+            Some(provider_id) => providers::provider_exists(db, provider_id),
+            None => Ok(false),
+        }
+    };
+    let mut changed = false;
+    let active_is_stale = match object.get("imageGeneration") {
+        Some(binding) if !binding.is_null() => !resolves(binding)?,
+        _ => false,
+    };
+    if active_is_stale {
+        object.insert("imageGeneration".into(), Value::Null);
+        changed = true;
+    }
+    if let Some(Value::Array(candidates)) = object.get("imageGenerationModels").cloned() {
+        let mut kept = Vec::with_capacity(candidates.len());
+        let mut dropped = false;
+        for candidate in candidates {
+            if resolves(&candidate)? {
+                kept.push(candidate);
+            } else {
+                dropped = true;
+            }
+        }
+        if dropped {
+            object.insert("imageGenerationModels".into(), Value::Array(kept));
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 fn effective_command_shell_id(settings: Option<&Value>) -> Option<String> {
     let configured = settings
         .and_then(|value| value.get("defaultCommandShell"))
@@ -685,11 +815,129 @@ fn validate_settings_value(value: &Value) -> Result<(), JsonRpcError> {
     let Some(object) = value.as_object() else {
         return Ok(());
     };
+    if let Some(policy) = object.get("networkPolicy").filter(|v| !v.is_null()) {
+        let Some(policy) = policy.as_object() else {
+            return Err(rpc_err(
+                1002,
+                "networkPolicy must be an object",
+                "INVALID_PARAMS",
+            ));
+        };
+        if policy
+            .get("mode")
+            .is_some_and(|mode| !matches!(mode.as_str(), Some("relaxed") | Some("strict")))
+        {
+            return Err(rpc_err(
+                1002,
+                "networkPolicy.mode must be relaxed or strict",
+                "INVALID_PARAMS",
+            ));
+        }
+        if policy
+            .get("insecureNoticeAcknowledged")
+            .is_some_and(|flag| !flag.is_boolean())
+        {
+            return Err(rpc_err(
+                1002,
+                "insecureNoticeAcknowledged must be a boolean",
+                "INVALID_PARAMS",
+            ));
+        }
+    }
+    if let Some(binding) = object.get("imageGeneration").filter(|v| !v.is_null()) {
+        for (key, max) in [("providerId", 128), ("modelId", 256)] {
+            if !binding
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.trim().is_empty() && s.len() <= max)
+            {
+                return Err(rpc_err(
+                    1002,
+                    "invalid image generation binding",
+                    "INVALID_PARAMS",
+                ));
+            }
+        }
+    }
+    if let Some(candidates) = object.get("imageGenerationModels").filter(|v| !v.is_null()) {
+        let Some(candidates) = candidates.as_array() else {
+            return Err(rpc_err(
+                1002,
+                "imageGenerationModels must be an array",
+                "INVALID_PARAMS",
+            ));
+        };
+        if candidates.len() > 128 {
+            return Err(rpc_err(
+                1002,
+                "imageGenerationModels contains too many models",
+                "INVALID_PARAMS",
+            ));
+        }
+        for binding in candidates {
+            for (key, max) in [("providerId", 128), ("modelId", 256)] {
+                if !binding
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.trim().is_empty() && s.len() <= max)
+                {
+                    return Err(rpc_err(
+                        1002,
+                        "invalid image generation candidate",
+                        "INVALID_PARAMS",
+                    ));
+                }
+            }
+        }
+    }
     if let Some(template_value) = object.get("promptEnhancementUserTemplate") {
         if let Some(message) =
             prompt_enhancement_template_error("promptEnhancementUserTemplate", template_value)
         {
             return Err(rpc_err(1002, message, "INVALID_PARAMS"));
+        }
+    }
+    if let Some(preference) = object.get("updatePreference") {
+        if !matches!(preference.as_str(), Some("automatic") | Some("manual")) {
+            return Err(rpc_err(
+                1002,
+                "updatePreference must be automatic or manual",
+                "INVALID_PARAMS",
+            ));
+        }
+    }
+    if let Some(version) = object.get("lastNotifiedUpdateVersion") {
+        let Some(version) = version.as_str() else {
+            return Err(rpc_err(
+                1002,
+                "lastNotifiedUpdateVersion must be a non-empty string",
+                "INVALID_PARAMS",
+            ));
+        };
+        if version.trim().is_empty() || version.len() > 128 {
+            return Err(rpc_err(
+                1002,
+                "lastNotifiedUpdateVersion must contain 1 to 128 characters",
+                "INVALID_PARAMS",
+            ));
+        }
+    }
+    if let Some(infinite_retry) = object.get("infiniteProviderRetry") {
+        if !infinite_retry.is_boolean() {
+            return Err(rpc_err(
+                1002,
+                "infiniteProviderRetry must be a boolean",
+                "INVALID_PARAMS",
+            ));
+        }
+    }
+    if let Some(keep_awake) = object.get("keepAwakeWhileRunning") {
+        if !keep_awake.is_boolean() {
+            return Err(rpc_err(
+                1002,
+                "keepAwakeWhileRunning must be a boolean",
+                "INVALID_PARAMS",
+            ));
         }
     }
     if let Some(threshold_value) = object.get("largePasteThreshold") {
@@ -1087,7 +1335,7 @@ fn bash_cancellation_requested(receiver: &Option<tokio::sync::watch::Receiver<bo
 }
 
 async fn clear_bash_cancellation(state: &Arc<Mutex<AppState>>, p: &ToolsExecuteParams) {
-    if p.tool_name != "Bash" {
+    if !matches!(p.tool_name.as_str(), "Bash" | "GenerateImages") {
         return;
     }
     let mut st = state.lock().await;
@@ -1364,6 +1612,12 @@ async fn handle_request(
         }
     }
 
+    if method.starts_with("configSync.") {
+        return config_sync_rpc::handle(state, method, params, tx)
+            .await
+            .map_err(config_sync_rpc_err);
+    }
+
     match method {
         method if method.starts_with("session.collaboration.") => {
             let st = state.lock().await;
@@ -1613,6 +1867,15 @@ async fn handle_request(
             let path = crate::db::canonical_project_path(path)
                 .ok_or_else(|| rpc_err(1002, "path required", "INVALID_PARAMS"))?;
             let st = state.lock().await;
+            if crate::scheduled::project::has_running_tasks(&st.db, &path)
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?
+            {
+                return Err(rpc_err(
+                    1008,
+                    "project has running scheduled tasks",
+                    "CONFLICT",
+                ));
+            }
             // A path that belongs to a multi-folder project group must stay put:
             // deleting one root would orphan the rest of the group, so callers
             // remove the folder from the group first. A single-folder stored
@@ -1648,6 +1911,8 @@ async fn handle_request(
                     return Err(rpc_err(1008, "project has running sessions", "CONFLICT"));
                 }
             }
+            crate::scheduled::project::pause(&st.db, &path)
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
             let mut sessions_removed = 0;
             for id in &session_ids {
                 if sessions::delete_session(&st.db, id)
@@ -1736,16 +2001,32 @@ async fn handle_request(
                 .get("snapshotId")
                 .and_then(|value| value.as_str())
                 .ok_or_else(|| rpc_err(1002, "snapshotId required", "INVALID_PARAMS"))?;
-            let st = state.lock().await;
-            let workspace_root = resolve_tool_workspace(&st, session_id)?;
+            let (workspace_root, data_dir, workspace_mutation_locks) = {
+                let st = state.lock().await;
+                (
+                    resolve_tool_workspace(&st, session_id)?,
+                    st.data_dir.clone(),
+                    st.workspace_mutation_locks.clone(),
+                )
+            };
+            let _workspace_guard = match workspace_root.as_deref() {
+                Some(root) => Some(
+                    workspace_mutation_locks
+                        .acquire(std::path::Path::new(root))
+                        .await
+                        .map_err(|error| rpc_err(1000, error.message(), error.code()))?,
+                ),
+                None => None,
+            };
             let outcome = review::rollback_change(
-                &st.data_dir,
+                &data_dir,
                 session_id,
                 snapshot_id,
                 workspace_root.as_deref().map(std::path::Path::new),
             )
             .map_err(|error| rpc_err(1000, error.to_string(), "INTERNAL"))?;
             if matches!(outcome.status, "rolledBack" | "alreadyRolledBack") {
+                let st = state.lock().await;
                 if let Some(root) = workspace_root.as_deref() {
                     let resolved = std::path::Path::new(root).join(&outcome.path);
                     st.hashline.invalidate_path(
@@ -1772,7 +2053,7 @@ async fn handle_request(
                 .db
                 .get_setting("app")
                 .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
-            Ok(normalize_settings_value(stored.unwrap_or_else(|| {
+            let mut settings = normalize_settings_value(stored.unwrap_or_else(|| {
                 json!({
                     "defaultMode": "agent",
                     "defaultCommandShell": tools::shell::default_shell_id(),
@@ -1786,7 +2067,19 @@ async fn handle_request(
                     },
                     "onboardingDismissed": false
                 })
-            })))
+            }));
+            // Repair on read: a binding whose provider row is already gone —
+            // deleted by a build that did not prune, an uninstalled plugin, or
+            // synced bundle — is dropped here and the store is corrected, so
+            // the shell never presents a default the runtime must reject.
+            if prune_unresolvable_image_bindings(&st.db, &mut settings)
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?
+            {
+                st.db
+                    .set_setting("app", &settings)
+                    .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
+            }
+            Ok(settings)
         }
         "settings.set" => {
             validate_settings_value(&params)?;
@@ -1801,7 +2094,9 @@ async fn handle_request(
             {
                 gate_default_command_shell_setting(&st)?;
             }
-            let settings = normalize_settings_value(merge_settings_value(stored, params));
+            let mut settings = normalize_settings_value(merge_settings_value(stored, params));
+            prune_unresolvable_image_bindings(&st.db, &mut settings)
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
             st.db
                 .set_setting("app", &settings)
                 .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
@@ -1821,6 +2116,7 @@ async fn handle_request(
                 }
             }
             crate::network_proxy::apply_from_settings(Some(&settings));
+            crate::network_policy::apply_from_settings(Some(&settings));
             Ok(json!({ "ok": true }))
         }
 
@@ -3195,7 +3491,8 @@ async fn handle_request(
 
             // Register before permission evaluation so tools.abort can cancel
             // an approval wait as well as an already-spawned process.
-            let cancellation_receiver = if p.tool_name == "Bash" {
+            let cancellation_receiver = if matches!(p.tool_name.as_str(), "Bash" | "GenerateImages")
+            {
                 let mut st = state.lock().await;
                 match st.register_bash_cancellation(&p.session_id, &p.tool_call_id) {
                     Ok(receiver) => Some(receiver),
@@ -3499,11 +3796,20 @@ async fn handle_request(
                 // Admission follows permission so approval waits do not occupy
                 // execution capacity. Keep this permit through review, the
                 // runner, and bookkeeping so every accepted call is bounded.
-                let tool_budget = {
+                let (tool_budget, workspace_mutation_locks) = {
                     let st = state.lock().await;
-                    st.tool_budget.clone()
+                    (st.tool_budget.clone(), st.workspace_mutation_locks.clone())
                 };
-                let _tool_permit = match tool_budget.acquire(&p.session_id, &p.tool_name).await {
+                let workspace_lock_root = workspace_path.as_deref().map(std::path::Path::new);
+                let _tool_permit = match tool_budget
+                    .acquire(
+                        &p.session_id,
+                        &p.tool_name,
+                        workspace_lock_root,
+                        &workspace_mutation_locks,
+                    )
+                    .await
+                {
                     Ok(permit) => permit,
                     Err(error) => {
                         tracing::warn!(
@@ -3558,6 +3864,28 @@ async fn handle_request(
                     );
                     None
                 });
+                let shell_review = if p.tool_name == "Bash" {
+                    match review::shell::prepare(
+                        &data_dir,
+                        &p.session_id,
+                        &p.tool_call_id,
+                        ws_path.as_deref(),
+                        scratch_path.as_deref(),
+                    ) {
+                        Ok(capture) => capture,
+                        Err(error) => {
+                            tracing::warn!(
+                                session_id = %p.session_id,
+                                tool_call_id = %p.tool_call_id,
+                                error = %error,
+                                "shell review capture unavailable"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 let mut bash_options = None;
                 if p.tool_name == "Bash" {
                     let (shell_id, cancellation) = {
@@ -3643,6 +3971,36 @@ async fn handle_request(
                     .await
                 };
                 result.tool_call_id = p.tool_call_id.clone();
+                if p.tool_name == "Bash" {
+                    let captured = shell_review.map(|capture| {
+                        let process_complete = !matches!(
+                            result.error_code.as_deref(),
+                            Some("TOOL_ABORTED" | "TOOL_TIMEOUT")
+                        );
+                        capture.finish(process_complete)
+                    });
+                    let reviews = captured
+                        .as_ref()
+                        .map(|capture| serde_json::to_value(&capture.reviews))
+                        .transpose()
+                        .map_err(|error| rpc_err(1000, error.to_string(), "INTERNAL"))?
+                        .unwrap_or_else(|| json!([]));
+                    let status = captured
+                        .as_ref()
+                        .map(|capture| json!(capture.status))
+                        .unwrap_or_else(|| json!("unavailable"));
+                    if !result.content.is_object() {
+                        result.content = json!({
+                            "error": result.content,
+                            "code": result.error_code.clone().unwrap_or_else(|| "TOOL_FAILED".into())
+                        });
+                    }
+                    if let Some(object) = result.content.as_object_mut() {
+                        object.insert("root".to_string(), json!("workspace"));
+                        object.insert("reviews".to_string(), reviews);
+                        object.insert("reviewCapture".to_string(), json!({ "status": status }));
+                    }
+                }
 
                 if let Some(pending) = pending_review {
                     if result.ok {
@@ -6045,6 +6403,52 @@ mod tests {
             .unwrap();
         assert_eq!(updated["largePasteThreshold"], 801);
 
+        handle_request(
+            state.clone(),
+            "settings.set",
+            json!({ "infiniteProviderRetry": true }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let retry_settings = handle_request(state.clone(), "settings.get", json!({}), tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(retry_settings["infiniteProviderRetry"], true);
+
+        handle_request(
+            state.clone(),
+            "settings.set",
+            json!({ "keepAwakeWhileRunning": true }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let power_settings = handle_request(state.clone(), "settings.get", json!({}), tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(power_settings["keepAwakeWhileRunning"], true);
+
+        let invalid_power = handle_request(
+            state.clone(),
+            "settings.set",
+            json!({ "keepAwakeWhileRunning": "yes" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid_power.data.unwrap()["errorCode"], "INVALID_PARAMS");
+
+        let invalid_retry = handle_request(
+            state.clone(),
+            "settings.set",
+            json!({ "infiniteProviderRetry": "yes" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid_retry.data.unwrap()["errorCode"], "INVALID_PARAMS");
+
         let invalid_threshold = handle_request(
             state.clone(),
             "settings.set",
@@ -6252,6 +6656,154 @@ mod tests {
             .unwrap();
         assert_eq!(settings["defaultCommandShell"], stored_shell);
         assert_eq!(settings["theme"], "light");
+    }
+
+    /// Creates a provider row through the RPC surface the shell uses.
+    async fn create_test_provider(
+        state: Arc<Mutex<AppState>>,
+        tx: mpsc::UnboundedSender<String>,
+    ) -> String {
+        let created = handle_request(
+            state,
+            "providers.create",
+            json!({
+                "name": "Image service",
+                "baseUrl": "http://localhost:8080/v1",
+                "authKind": "none",
+                "defaultModelId": "gpt-image-2.5"
+            }),
+            tx,
+        )
+        .await
+        .unwrap();
+        created["provider"]["id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn settings_set_drops_image_bindings_whose_provider_is_gone() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let provider_id = create_test_provider(state.clone(), tx.clone()).await;
+
+        // The shell writes whole snapshots back, so a binding for a row that no
+        // longer exists can arrive through an ordinary settings write.
+        handle_request(
+            state.clone(),
+            "settings.set",
+            json!({
+                "imageGeneration": { "providerId": provider_id, "modelId": "gpt-image-2.5" },
+                "imageGenerationModels": [
+                    { "providerId": provider_id, "modelId": "gpt-image-2.5" },
+                    { "providerId": "removed-service", "modelId": "gpt-image-2.5" }
+                ]
+            }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+
+        let settings = handle_request(state.clone(), "settings.get", json!({}), tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            settings["imageGeneration"],
+            json!({ "providerId": provider_id, "modelId": "gpt-image-2.5" })
+        );
+        assert_eq!(
+            settings["imageGenerationModels"],
+            json!([{ "providerId": provider_id, "modelId": "gpt-image-2.5" }])
+        );
+
+        let stored = state.lock().await.db.get_setting("app").unwrap().unwrap();
+        assert_eq!(stored["imageGenerationModels"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn settings_get_repairs_a_binding_left_by_a_deleted_provider() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let provider_id = create_test_provider(state.clone(), tx.clone()).await;
+
+        handle_request(
+            state.clone(),
+            "settings.set",
+            json!({
+                "imageGeneration": { "providerId": provider_id, "modelId": "gpt-image-2.5" },
+                "imageGenerationModels": [
+                    { "providerId": provider_id, "modelId": "gpt-image-2.5" }
+                ]
+            }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let deleted = handle_request(
+            state.clone(),
+            "providers.delete",
+            json!({ "id": provider_id }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted["ok"], true);
+
+        // Reading the settings repairs what the deletion left behind, so a
+        // binding the runtime would reject never reaches the shell again.
+        let settings = handle_request(state.clone(), "settings.get", json!({}), tx.clone())
+            .await
+            .unwrap();
+        assert!(settings["imageGeneration"].is_null());
+        assert_eq!(settings["imageGenerationModels"], json!([]));
+
+        let stored = state.lock().await.db.get_setting("app").unwrap().unwrap();
+        assert!(stored["imageGeneration"].is_null());
+        assert_eq!(stored["imageGenerationModels"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn settings_keep_image_bindings_for_a_disabled_provider() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let provider_id = create_test_provider(state.clone(), tx.clone()).await;
+        let disabled = handle_request(
+            state.clone(),
+            "providers.update",
+            json!({ "id": provider_id, "enabled": false }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(disabled["provider"]["enabled"], false);
+
+        // A row that still exists keeps its binding: an unavailable but
+        // present provider is a state the user repairs in Settings, and
+        // pruning it would silently discard the user's choice.
+        handle_request(
+            state.clone(),
+            "settings.set",
+            json!({
+                "imageGeneration": { "providerId": provider_id, "modelId": "gpt-image-2.5" }
+            }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let settings = handle_request(state, "settings.get", json!({}), tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            settings["imageGeneration"],
+            json!({ "providerId": provider_id, "modelId": "gpt-image-2.5" })
+        );
     }
 
     #[tokio::test]
@@ -8572,5 +9124,66 @@ mod tests {
         }
         let st = state.lock().await;
         assert_eq!(st.plugins.locale(), "en-US");
+    }
+}
+
+#[cfg(test)]
+mod image_generation_settings_tests {
+    use super::*;
+    #[test]
+    fn validates_optional_image_binding() {
+        for value in [
+            json!({}),
+            json!({"imageGeneration": null}),
+            json!({"imageGeneration": {"providerId": "p", "modelId": "image"}}),
+            json!({"imageGenerationModels": null}),
+            json!({"imageGenerationModels": []}),
+            json!({"imageGenerationModels": [
+                {"providerId": "p", "modelId": "image-one"},
+                {"providerId": "q", "modelId": "image-two"}
+            ]}),
+        ] {
+            assert!(validate_settings_value(&value).is_ok());
+        }
+        for value in [
+            json!(false),
+            json!({}),
+            json!({"providerId": "p", "modelId": " "}),
+        ] {
+            assert!(validate_settings_value(&json!({"imageGeneration": value})).is_err());
+        }
+        for value in [
+            json!(false),
+            json!({}),
+            json!([{"providerId": "p", "modelId": " "}]),
+        ] {
+            assert!(validate_settings_value(&json!({"imageGenerationModels": value})).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod update_settings_tests {
+    use super::*;
+
+    #[test]
+    fn validates_update_preference_and_reminder_version() {
+        for value in [
+            json!({}),
+            json!({"updatePreference": "automatic"}),
+            json!({"updatePreference": "manual"}),
+            json!({"lastNotifiedUpdateVersion": "0.15.9"}),
+        ] {
+            assert!(validate_settings_value(&value).is_ok(), "{value}");
+        }
+        for value in [
+            json!({"updatePreference": "sometimes"}),
+            json!({"updatePreference": null}),
+            json!({"lastNotifiedUpdateVersion": "  "}),
+            json!({"lastNotifiedUpdateVersion": 12}),
+            json!({"lastNotifiedUpdateVersion": "x".repeat(129)}),
+        ] {
+            assert!(validate_settings_value(&value).is_err(), "{value}");
+        }
     }
 }

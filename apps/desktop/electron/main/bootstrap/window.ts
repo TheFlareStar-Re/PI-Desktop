@@ -9,10 +9,9 @@ import {
   MAC_TRAFFIC_LIGHT_POSITION,
   type CloseBehavior,
 } from "@pi-desktop/shared";
-import type { BrowserPane } from "../browser-view";
+import type { BrowserHost } from "../browser-host";
 import type { HostProcess } from "../host-process";
 import type { Logger } from "../logger";
-import type { PluginRuntime } from "../plugin-runtime";
 import type { PluginViewHost } from "../plugin-view-host";
 import {
   baseWindowBounds,
@@ -21,11 +20,8 @@ import {
   displayWorkAreaKey,
   emptyWorkPanelReservationState,
   isWorkPanelOuterResizeEdge,
-  parseWorkPanelChatWidth,
-  parseWorkPanelReservationWidth,
   planWorkPanelChatResize,
   planWorkPanelReservation,
-  reconcileBaseWindowBounds,
   WORK_PANEL_MAX_WIDTH,
   WORK_PANEL_MIN_WIDTH,
   windowBoundsEqual,
@@ -35,6 +31,7 @@ import {
 } from "../work-panel-window";
 import { readWindowState, writeWindowState } from "../window-preferences";
 import { suppressLinuxFramelessSystemMenu } from "../frameless-system-menu";
+import { recoverRendererAfterGone } from "../renderer-recovery";
 
 function windowsIconPath(): string | undefined {
   if (process.platform !== "win32") return undefined;
@@ -93,16 +90,13 @@ export type WindowLifecycleDependencies = {
   observedWorkPanelBaseBounds: (windowBounds: WindowBounds, transition: DisplayTransition) => WindowBounds;
   classifyDisplayTransition: (displayKey: string) => DisplayTransition;
   resetMenuRendererReady: (window: BrowserWindow) => void;
-  markMenuRendererReady: (window: BrowserWindow) => boolean;
-  sendToRenderer: (channel: string, payload: unknown) => void;
   safeOpenExternal: (rawUrl: unknown) => Promise<void>;
   showPluginLauncher: () => Promise<void>;
   askCloseBehavior: (window: BrowserWindow) => Promise<CloseBehavior | null>;
   applyCloseBehavior: (behavior: CloseBehavior) => void;
   createTray: () => void;
-  browserPane: BrowserPane;
+  browserHost: BrowserHost;
   pluginViews: PluginViewHost;
-  plugins: PluginRuntime;
   logger: Pick<Logger, "app">;
 };
 
@@ -120,16 +114,13 @@ export async function createWindow({
   observedWorkPanelBaseBounds,
   classifyDisplayTransition,
   resetMenuRendererReady,
-  markMenuRendererReady,
-  sendToRenderer,
   safeOpenExternal,
   showPluginLauncher,
   askCloseBehavior,
   applyCloseBehavior,
   createTray,
-  browserPane,
+  browserHost,
   pluginViews,
-  plugins,
   logger,
 }: WindowLifecycleDependencies): Promise<void> {
 
@@ -468,12 +459,37 @@ export async function createWindow({
     void safeOpenExternal(url).catch(() => undefined);
     return { action: "deny" };
   });
+  let windowCloseAccepted = false;
   window.webContents.on("did-start-loading", () => {
+    browserHost.disposeGuest();
     windowState.notificationViewingSessionId = null;
     if (windowState.mainWindow === window) resetMenuRendererReady(window);
   });
-  window.webContents.on("render-process-gone", () => {
+  window.webContents.on("render-process-gone", (_event, details) => {
     windowState.notificationViewingSessionId = null;
+    recoverRendererAfterGone(details, {
+      isCurrentWindow: windowState.mainWindow === window,
+      quitting: windowState.quitting,
+      windowCloseAccepted,
+      windowDestroyed: window.isDestroyed(),
+      webContentsDestroyed: window.webContents.isDestroyed(),
+      reload: () => window.webContents.reload(),
+      log: (rendererDetails, reloaded) => {
+        logger.app(
+          "diagnostics",
+          rendererDetails.reason === "clean-exit" ? "info" : "warn",
+          "renderer process exited",
+          {
+            event: "rendererProcessGone",
+            data: {
+              reason: rendererDetails.reason,
+              exitCode: rendererDetails.exitCode,
+              reloaded,
+            },
+          },
+        );
+      },
+    });
   });
 
   // Devtools shortcut, gated on developer mode. Frameless windows get no
@@ -633,7 +649,7 @@ export async function createWindow({
   screen.on("display-added", reconcileDisplayTopology);
   screen.on("display-removed", reconcileDisplayTopology);
 
-  browserPane.setWindow(window);
+  browserHost.setWindow(window);
   pluginViews.setWindow(window);
   window.on("closed", () => {
     screen.removeListener("display-metrics-changed", reconcileDisplayTopology);
@@ -658,7 +674,7 @@ export async function createWindow({
     }
     if (windowState.mainWindow !== window) return;
     windowState.mainWindow = null;
-    browserPane.setWindow(null);
+    browserHost.setWindow(null);
     pluginViews.setWindow(null);
     if (
       process.platform !== "darwin" &&
@@ -886,6 +902,7 @@ export async function createWindow({
       windowState.quitting ||
       windowsAllowedToClose.has(window)
     ) {
+      windowCloseAccepted = true;
       return;
     }
     event.preventDefault();
@@ -1828,16 +1845,17 @@ export async function createWindow({
             // which is still dark from the destination pass; the remaining
             // settings scenes are light so the tabs read as one sequence.
             await setTheme("light");
-            // Model configuration tab: vendor accounts, provider cards,
-            // defaults, edit dialog. Addressed by tab id — the settings nav
+            // Model configuration tab: defaults, the service list (API services
+            // and subscription accounts together), then a row's editor — a row
+            // opens its own editor. Addressed by tab id — the settings nav
             // has been reordered since this scene was written.
             await setSettingsTab("agent");
             await new Promise((r) => setTimeout(r, 350));
             await shot("pi-settings-models");
             await windowState.mainWindow!.webContents.executeJavaScript(`
               (() => {
-                const edit = [...document.querySelectorAll('.provider-row-actions .provider-icon-btn')][0];
-                const add = document.querySelector('.provider-section-head button');
+                const edit = document.querySelector('.model-provider-row.is-openable');
+                const add = document.querySelector('.model-provider-add');
                 (edit ?? add)?.dispatchEvent(new MouseEvent('click',{bubbles:true}));
               })()
             `);

@@ -2,14 +2,59 @@ import type { ChangelogEntry } from "./changelog.js";
 
 export const frEntries: ChangelogEntry[] = [
   {
+    "version": "0.15.8",
+    "date": "2026-09-26",
+    "highlights": [
+      "Refond les réglages des modèles IA avec un sélecteur de services, des modèles recommandés et des conseils plus clairs pour les endpoints personnalisés.",
+      "Les endpoints personnalisés utilisent les éditeurs fournis par PI-Desktop pour compléter les métadonnées, capacités et formats d’API des modèles.",
+      "Les requêtes Google Gemini redeviennent fiables, conservent les en-têtes du fournisseur et suppriment les valeurs d’image obsolètes lorsqu’un fournisseur est supprimé.",
+      "Les cartes de sous-agents s’adaptent à la largeur du panneau et reprennent leur liaison de modèle privée avec les autorisations de délégation à jour.",
+      "Renforce l’annulation et l’arrêt des extensions de confiance afin de retirer sûrement les mises à jour tardives, files d’attente et sous-processus.",
+      "Améliore la relecture et la reprise après redémarrage de la recherche web hébergée ; les modèles OAuth OpenAI Codex peuvent activer la recherche native.",
+      "Copiez, téléchargez ou développez les tableaux Markdown dans le chat ; ouvrez les fichiers reconnus ou copiez leurs chemins complets et relatifs.",
+      "Améliore les contrôles de raisonnement du Composer, le parcours des images générées, les badges de tâches non lues Windows et les réglages vocaux localisés.",
+    ],
+  },
+
+  {
+    "version": "0.15.7",
+    "date": "2026-09-25",
+    "highlights": [
+      "Célébrez la Fête de la mi-automne avec une animation lunaire plein écran et temporaire au premier lancement, rejouable depuis les Réglages.",
+      "Utilisez la saisie vocale locale facultative dans le Composer, avec des contrôles développeur, des téléchargements de modèles vérifiés et annulables, et une protection contre les transcriptions obsolètes.",
+      "Ajoute une version Windows portable en un seul exécutable, en plus de l’installateur et des ZIP.",
+      "Améliore la fiabilité des agents avec des annulations et reprises plus sûres, des catalogues de modèles plus robustes, une meilleure navigation des lots d’images générées et un panneau de travail plus réactif.",
+    ],
+  },
+
+  {
+    "version": "0.15.6",
+    "date": "2026-09-23",
+    "highlights": [
+      "Activez la recherche native dans vos services DeepSeek, xAI et OpenAI existants sans modifier leurs paramètres de connexion.",
+      "Prend en charge GPT-6 Astra, Sol et Luna dans les catalogues de modèles OpenAI et ChatGPT/Codex.",
+    ],
+  },
+
+  {
+    "version": "0.15.5",
+    "date": "2026-09-23",
+    "highlights": [
+      "Prend en charge GPT-6 Astra, Sol et Luna dans les catalogues de modèles OpenAI et ChatGPT/Codex.",
+    ],
+  },
+
+  {
     "version": "0.15.2",
     "date": "2026-09-21",
     "highlights": [
+      "Générez et modifiez des images dans le chat, choisissez un modèle et créez des lots avec la compétence intégrée imagegen.",
       "L'activité des outils suit la largeur de la conversation et contient proprement les libellés longs.",
       "Les pièces jointes collées sont conservées même si le collage se termine après un changement de session.",
       "Le modèle par défaut sélectionné est conservé lors de la modification des fournisseurs, avec un repli sûr s'il est supprimé.",
       "Les sections imbriquées de réflexion et d'activité des outils sont plus faciles à lire, parcourir et restaurer.",
       "Améliore les mises en page du Composer, les contrôles de raisonnement et la cohérence des thèmes de l'espace de travail.",
+      "Ajoute un interrupteur optionnel dans Réglages pour réessayer les erreurs réseau et temporaires jusqu’à réussite.",
     ],
   },
 

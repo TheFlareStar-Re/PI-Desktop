@@ -293,6 +293,12 @@ may be retained while exactly one workspace supplies the visible shell context.
   pointer hover or keyboard focus may prefetch its transcript; duplicate reads
   share one in-flight request and the renderer retains at most five recent
   transcript snapshots.
+- A transcript window that reports no messages for a session the sidebar counts
+  as having history is read as unreadable, not as empty (**D615**, issue #795):
+  the selection asks once more, then keeps the snapshot the user already has,
+  and otherwise reports `chat.sessionTranscriptEmpty` instead of committing an
+  empty transcript. Such a page is never cached, so a hover prefetch cannot
+  re-serve emptiness on every later open.
 - Transcript loading starts without waiting for an older superseded selection.
   When session summary metadata is available, project activation/clearing and
   transcript IO run in parallel. A monotonic navigation generation permits only
@@ -437,15 +443,20 @@ may be retained while exactly one workspace supplies the visible shell context.
    `session.endTurn` closes the turn without inserting a notification. Any
    background session or unfocused/hidden window creates the durable record.
    An `aborted` turn never creates one.
-3. Electron emits `notification.changed` to every live renderer so the bell
-   badge and currently open inbox refresh.
+3. Electron emits `notification.changed` to every live renderer for the newly
+   inserted durable row so the bell badge and currently open inbox refresh.
+   Renderer delivery is keyed by the durable `id`: duplicate ids and delayed
+   events for rows already acknowledged or cleared are ignored.
 4. For a task result, a focused main window produces no native banner. If
    it is unfocused and native notifications are supported, Electron shows one
    platform notification derived from the event kind and session title. The
    separate interactive ask/permission/plan path may alert for a focused
    background session while suppressing the exact visible session. On
    Windows, the banner is attributed to the canonical PI-Desktop
-   AppUserModelID shared with the NSIS package and taskbar identity.
+   AppUserModelID shared with the NSIS package and taskbar identity. Electron
+   retains at most one task-native object per durable id; successful read,
+   mark-all-read, and clear actions close the matching objects and retain a
+   tombstone against late/replayed delivery.
 5. Clicking the native notification shows/restores and focuses the main
    window, then emits `notification.activated { sessionId }`.
 6. Renderer activation selects the bound project when present, loads the
@@ -464,9 +475,12 @@ may be retained while exactly one workspace supplies the visible shell context.
   current renderer lifetime and never marks rows read implicitly.
 - Arrow keys move through rows with wrap disabled; `Home` / `End` jump to the
   first/last row; Enter/Space marks the row read and activates its session.
-- Mark all read updates every unread row in one host transaction. Clear
-  removes all inbox rows in one host transaction. Both operations are
-  idempotent, refresh the exact unread count, and leave sessions/turns intact.
+- Mark all read updates every unread row in one host transaction and dismisses
+  outstanding task-native objects. Clear removes all inbox rows in one host
+  transaction, dismisses outstanding task-native objects, and leaves
+  sessions/turns intact. Both operations are idempotent and refresh the exact
+  unread count; a failed host mutation does not optimistically dismiss a
+  banner.
 - The renderer does not synthesize notification records from stream events.
   Host-core's unique `turn_id` is the exactly-once boundary across repeated
   terminal updates, renderer reloads, and process restarts.
@@ -494,11 +508,16 @@ may be retained while exactly one workspace supplies the visible shell context.
   unique New launcher tab; its data-driven Review, Files, Browser, and plugin
   view rows are ordinary buttons in the page body.
 - Tab focus uses roving `tabIndex`: ArrowLeft/ArrowRight/Home/End move across
-  tabs and Delete/Backspace closes the focused tab. Middle-click closes a tab;
-  closing an active tab selects the right neighbor, then the left. Selecting a
-  launcher row replaces that New tab with the destination or activates its
-  existing singleton. Shortcut labels appear only for bindings that actually
-  exist.
+  tabs and Delete/Backspace closes the focused tab. Pressing and moving a tab
+  by 8px starts pointer reordering; dropping on the target's left or right half
+  inserts before or after it, and `Alt+ArrowLeft`/`Alt+ArrowRight` provides the
+  keyboard equivalent. Holding the pointer near the tab strip's edge scrolls
+  toward off-screen tabs and keeps the drop indicator synchronized. The active
+  tab remains active after reordering.
+  Middle-click closes a tab; closing an active tab selects the right neighbor,
+  then the left. Selecting a launcher row replaces that New tab with the
+  destination or activates its existing singleton. Shortcut labels appear only
+  for bindings that actually exist.
 - Activating a tool that is already open activates its existing resource instead
   of replacing it, so Browser keeps its URL and Files its selection (D173).
 - Every resource can be closed from its tab. Closing the active resource selects
@@ -555,20 +574,26 @@ may be retained while exactly one workspace supplies the visible shell context.
 - Settings → Info and application-menu checks share one typed update state.
   Manual checks expose up-to-date or error feedback; automatic failures do not
   open a toast or ambient banner.
-- Manual delivery (non-AppImage Linux and Windows portable runs
-  with `PORTABLE_EXECUTABLE_FILE`) stops at `available` and
-  offers the fixed GitHub Releases page. In-app delivery (packaged macOS,
-  Windows NSIS, and Linux AppImage) automatically advances through
-  `downloading` to the stable `downloaded` state.
+- Settings → Info adds a persisted Automatic / Manual update preference.
+  Automatic preserves the existing in-app flow where supported; Manual keeps
+  scheduled checks but never starts an automatic download or install-on-quit.
+  Installed Windows NSIS, packaged macOS, and Linux AppImage default to
+  Automatic. Windows ZIP/portable defaults to Manual, with a warning before an
+  explicit Automatic opt-in; packages without an automatic installer remain
+  Manual.
+- Manual mode raises one ambient reminder for each newly available version.
+  The last reminded version is Host-persisted, so repeated checks, dismissal,
+  route remounts, and app restarts do not re-announce that version. Settings →
+  Info continues to show the available version and the Releases action.
 - `downloaded` remains actionable until Restart to update or normal app quit;
   later scheduled/manual checks do not replace it with `checking`.
-- A compact update notice appears in the main pane's top-right safe area only
-  for manual `available`, in-app `downloading`, or `downloaded`. It stays clear
-  of the bottom composer at every supported window size and draft height. The
-  notice uses a stable icon/title/message hierarchy, shows determinate download
-  progress when available, and keeps the relevant action inside the same
-  surface. Dismissal suppresses the current version-and-status stage; a later
-  stage such as `downloaded` appears again.
+- A compact update notice appears in the main pane's top-right safe area for
+  the one-time manual reminder, in-app `downloading`, or `downloaded`. It stays
+  clear of the bottom composer at every supported window size and draft height.
+  The notice uses a stable icon/title/message hierarchy, shows determinate
+  download progress when available, and keeps the relevant action inside the
+  same surface. Dismissal remains local to the current renderer session; the
+  persisted version marker prevents the same manual reminder from returning.
 - When Main attaches localized product notes for the discovered version
   (`UpdateState.releaseNotes`, D164), the notice and Settings → Info Updates
   row show a compact "What's new" list under the status message. Notes come
@@ -583,7 +608,7 @@ may be retained while exactly one workspace supplies the visible shell context.
   Escape, or the backdrop, and restores focus to the invoking control.
 - D126 tag releases publish all platform manifests and installers. Packaged
   macOS, Windows NSIS, and Linux AppImage use the in-app lane; Linux deb/rpm
-  and Windows portable remain notify-and-link delivery modes.
+  and Windows ZIP remain notify-and-link delivery modes.
 
 ## 2. Streaming message behavior
 
@@ -672,6 +697,11 @@ may be retained while exactly one workspace supplies the visible shell context.
   users must not see duplicate failure summaries for one turn. Completed turns
   do not add a success card; their existing transcript and message-scoped
   review cards remain the completion evidence.
+- A structured inline assistant error can be dismissed from the transcript. This
+  hides only its UI card, keyed by message id in renderer runtime state; the
+  original UiMessage, host transcript, and database record remain untouched.
+  The dismissal survives rerenders and session switches for the current app
+  lifetime, and does not add a restore or destructive transcript action.
 - Failure copy states that the existing work remains available. The applicable
   failure surface has exactly one **Continue** action and no **Regenerate**
   action. Continue appends the current locale's continuation prompt (`Continue
@@ -724,12 +754,19 @@ may be retained while exactly one workspace supplies the visible shell context.
   append to that session's Host-owned, persisted FIFO queue; session switching
   never moves or clears another session's queue.
 - The queue renders above the composer. Each row has an independently
-  keyboard-reachable Remove action and a Send now action.
+  keyboard-reachable Remove action and a Send now action once Host admission
+  returns a durable id. While admission is pending, row actions are disabled
+  with Saving tooltips and a Saving label on Send now; edit/remove leave both
+  the queue and composer draft unchanged.
 - Send now moves its row to the head and requests the new `agent/stop` channel.
   The current assistant response and completed tool batch finish normally;
   after `agent_end` and durable turn finalization, the promoted row is
   dispatched through the normal `agent/prompt` flow before the remaining rows.
-  An idle Send now dispatches immediately.
+  An idle Send now dispatches immediately. While waiting, promoted rows retain
+  Remove and explain that the current task must finish. A refused or failed
+  graceful stop reports an error without losing the queued message. Removal
+  waits for Host acknowledgement; if delivery wins the race, report that the
+  message has already started and direct the user to Stop.
 - Without Send now, the next FIFO row starts automatically after the active
   turn completes, fails, or is aborted. A terminal event can arrive before
   persistence releases the session; finalization must wake the queue again
@@ -813,27 +850,35 @@ may be retained while exactly one workspace supplies the visible shell context.
 - Both modes give each loaded assistant turn one whole-process disclosure. It
   contains thinking, tools, hosted searches and intermediate progress text; the
   trailing answer, assistant errors and stopped trailing text remain outside it.
+  A marked `steering: true` supplement stays inside the same process. Unmarked
+  queued **Send now** prompts remain new turns.
 - A contiguous activity segment receives a group disclosure only when it has at
   least two mode-visible items. Progress text ends the segment, a singleton uses
   its item disclosure directly, and compact-hidden thinking does not create a
   redundant group. Existing Task topology remains separate.
-- Detailed starts active and completed whole processes open. Its active ordinary
-  group starts open and closes when it completes only if untouched; completed
-  groups otherwise start closed. Compact starts the process and groups closed,
-  except an untouched active process with any recorded failed/denied tool remains
-  open through recovery and closes on completion.
-- In Detailed, leaf auto-open applies only when the literal final item of the last
-  activity group is an eligible tool-call or hosted-search row. Failed/denied
-  items stay closed, and a final thinking item never causes a backward scan.
-  Compact keeps every item payload closed and hides reasoning text/excerpts while
-  retaining its active thinking indicator.
-- Activating a process, group or item header toggles only that level. Closing a
+- Processes start expanded while active. Completion resets them to collapsed,
+  including after active nested clicks, keyboard interaction or failed/denied
+  calls, by using a new process identity. The header shows an icon-only
+  failure/issue marker whenever the process has issues, including while folded.
+  Reopening a completed process and new search reveals remain effective. The header updates
+  elapsed time once per second while active and shows the tool count. The loaded
+  initiating user's timestamp supplies the start when available; user bubbles
+  and completed assistant turns show that wall-clock time in the hover action
+  chrome, in the current locale. The chrome hides at rest and when the pointer
+  leaves the window.
+- Detailed starts the active ordinary group open and closes it when it completes
+  only if untouched; completed groups otherwise start closed. Compact starts
+  nested groups closed. In Detailed, leaf auto-open applies only when the
+  literal final item of the last activity group is an eligible tool-call or
+  hosted-search row. Failed/denied items stay closed, and a final thinking item
+  never causes a backward scan. Compact keeps every item payload closed and
+  hides reasoning text/excerpts while retaining its active thinking indicator.
+- Activating a nested group or item header toggles only that level. Closing a
   parent preserves child state, reopening restores it, and sibling groups remain
   independent. Opening a parent is never an expand-all action.
-- A manual item action claims its group and process as user-owned without toggling
-  them. Streaming and completion cannot reopen a manual close or close around
-  content the user opened, focused or selected. Choices survive mode changes,
-  singleton-to-group growth and remounts while the retained session pane lives.
+- A manual item action claims its group as user-owned without toggling it.
+  Nested choices survive mode changes, singleton-to-group growth and remounts
+  while the retained session pane lives. Whole-process completion still folds.
 - Search/navigation opens the process and activity group that own the named
   message, once per reveal request. Item-level targeting is not part of this
   change. Compact reasoning requires an explicit switch to Detailed. Closing
@@ -1251,9 +1296,16 @@ Project drag/drop follows these patterns:
   the work panel follows the folder that answered: a file of the primary folder
   travels as a project-relative path, a file of a sibling folder of the same
   project as an absolute one, exactly as a scratch or attachment file does. A
-  chip whose reference matches nothing opens nothing and reports itself; the OS
-  default application is no longer what this click does, though that action
-  stays reachable from the file view's own context menu.
+  chip whose reference matches nothing opens nothing and reports itself, and so
+  does a right-click on it: the file-reference menu — offered on every
+  reference the transcript renders, a sent `@path` chip, an inline code span, a
+  local link, a local image, a tool row's own file path, a path in a tool
+  result's file or match list, and an image attachment's thumbnail — shows the
+  file in the system file manager through that same completion and that same
+  address, and copies that file's full path or its project-relative path. A file
+  outside the project has no relative path to copy and says so. The OS default
+  application is no longer what this click does, though that action stays
+  reachable from the file view's own context menu.
 - The same destination rule governs every other surface of the transcript that
   names a file, because one opener serves them all: clicking the file path in a
   tool row's summary (Read, Write, Edit, fetch) and clicking a path in a tool
@@ -1331,28 +1383,33 @@ Project drag/drop follows these patterns:
 - Button appears as soon as upward scrolling releases follow mode
 - Click button: scrolls to bottom, resumes auto-scroll
 - Button disappears when at bottom
-- The subagent task dock uses the same single-body scroll owner as the work
-  panel. It renders the task description followed by the delegate's live
-  thinking, tool, and answer rows in normal content flow; it does not mount a
-  nested `.subagent-run-rows` workflow scrollbar. While the panel is pinned,
-  new process rows stay in view; a real upward gesture pauses follow and shows
-  the standard jump-to-latest control. This keeps the process readable without
-  a second scrollbar or an empty tail.
-- Clicking a delegation topology node toggles an inset grouped side sheet in the
-  right-side work-panel dock instead of expanding the transcript. Clicking the
-  selected node again closes the side sheet; selecting another node replaces
-  the current detail in place. The dock has
-  a sticky identity header (avatar, name, and model caption on the left; status
-  capsule and elapsed time trailing on the same row), the Task call's selectable description as a full-width grouped
-  card under a Task section label, capped at four lines with an inline Show
-  more / Show less control for longer tasks, and its live process under an
-  Activity section on one subtle vertical timeline; it does not render separate
-  details, output, or workflow tabs. At the minimum panel width, long commands,
-  paths, and tool summaries remain contained by the dock instead of expanding
-  the side sheet past the client area.
-  Selecting another node replaces the task in place, closing it restores the
-  prior resource view when present, and switching sessions or routes hides the
-  selection. `Cmd/Ctrl + J` hides the whole dock.
+- A delegation tab uses the same single-body scroll owner as the work panel.
+  It renders the delegate's conversation — each `Task` call's prompt as a user
+  row followed by the delegate's live thinking, tool, and answer rows — in
+  normal content flow; it does not mount a nested `.subagent-run-rows`
+  workflow scrollbar. While the panel is pinned, new rows stay in view; a real
+  upward gesture pauses follow and shows the standard jump-to-latest control.
+  This keeps the conversation readable without a second scrollbar or an empty
+  tail.
+- Clicking a delegation topology node opens (or activates) a dedicated
+  `subagent` tab in the work panel instead of expanding the transcript or
+  replacing the tab strip. Multiple delegations coexist as independent tabs —
+  ten subagents yield ten tabs — with the standard tab affordances (activate,
+  drag-reorder, close via ×, middle-click, or Delete, and wheel overflow).
+  A tab shows the delegation as a message list: every `Task` call of the
+  resume chain renders its prompt as a user row, and the rows the delegate
+  produced under that call render with the main transcript's message-list
+  language, so a follow-up prompt reads as the next user turn. The tab is
+  display-only: a disabled two-row composer sits at the foot with an in-field
+  hint that subagents are driven by the main agent and cannot take input; no
+  send path exists. At the minimum panel width, long commands, paths, and
+  tool summaries wrap inside the committed width instead of expanding the
+  panel past the client area.
+  A tab is never opened automatically when a delegate starts; only a node
+  click opens one. Tabs persist after the delegate settles until the user
+  closes them, and they are scoped to their session like every other tab.
+  Switching sessions or routes hides the panel; `Cmd/Ctrl + J` toggles the
+  whole work panel.
 
 ### 9.1a Sidebar project path and open folder
 
@@ -1384,11 +1441,13 @@ Project drag/drop follows these patterns:
   bounded collaboration section after the chips: creator/source session
   when present (title, not UUID), current task preview, up to two recent
   exchanges with direction, and terminal result. Created-session
-  references remain keyboard-navigable buttons (at most eight). It may
-  show a live `running` or `waiting_permission` state, but never loads the
-  complete transcript or exposes message content beyond the host's bounded
-  preview. Completion and failure results are derived from the durable target
-  turn and remain visible after reload.
+  references remain keyboard-navigable buttons (at most eight), and show a
+  localized running indicator only while the referenced session has an active
+  runtime; idle, queued, permission, and terminal states add no label. It may
+  show a live `running` or `waiting_permission` state for the hovered session,
+  but never loads the complete transcript or exposes message content beyond
+  the host's bounded preview. Completion and failure results are derived from
+  the durable target turn and remain visible after reload.
 - Before showing a project session card, the renderer re-reads the active
   workspace through the existing project-read operation. This keeps the Git
   branch current after an external checkout without activating a project or
@@ -1494,10 +1553,57 @@ This does not prevent state changes — it makes them instant.
 
 ### 10.4 Programmatic scrolling
 
-- Session activation uses an immediate layout-phase bottom position so the
-  first visible frame is already stable at the latest record.
-- Jump-to-latest and minimap navigation use smooth scrolling only when the OS
-  has not requested reduced motion.
+- Session activation measures folded row height in the same layout phase as
+  its immediate bottom pin, so the first frame is already at the real bottom.
+  It does not defer that pin to a later frame or traverse the history.
+  Once a first/reveal commit selects the current snapshot, urgent updates keep
+  that projection until deferred rendering catches up; an older deferred snapshot
+  must not temporarily replace it and clamp the restored scroll position.
+  Completed-session hydration and revalidation select the current snapshot too;
+  only streaming work may use a deferred projection. A visible pinned pane is
+  positioned in the layout commit of its rendered messages, not against raw
+  messages whose DOM has not mounted yet.
+  A partial latest page can fold below one viewport even when many physical
+  records were loaded. Its unused space belongs above the content, keeping the
+  last row at the composer reserve from the first commit and while older pages
+  load. `scrollTop === max === 0` alone does not prove visual bottom alignment.
+  Once a retained pane has a partial live history, keep this alignment after its
+  final page too; explicit search windows and initially complete short chats
+  retain their ordinary layout. Overflowing history has no permanent spacer.
+- The main transcript jump-to-latest commits the canonical live projection and
+  positions its folded thinking/process height before paint, including return
+  from a search window or ordinary paged history. It cannot consume navigation
+  against the obsolete reading-window DOM, even when that old window is already
+  at its own bottom. Same-message jumps still receive a layout commit. Minimap
+  navigation alone may use smooth scrolling when reduced motion is not requested.
+- Mounted transcript rows are laid out. Skipping them leaves the 140px
+  estimate, which collapses when a folded row reaches the viewport and shifts
+  entry, jump-to-latest, and a long upward scroll. The bounded window, not
+  that skip, limits how many rows stay mounted.
+- `.thread-scroll` keeps native anchoring disabled: pinned follow, explicit
+  reading anchors, and history insertion must have one scroll-position owner.
+- Upward input releases follow without writing a new scroll offset. The
+  history-loading boundary reserves the same translated text geometry while
+  idle and loading, including wrapped labels.
+- A history insertion restores its reading anchor only when the corresponding
+  rendered window commits, not when raw message count changes ahead of deferred
+  rendering. The anchor compensates layout displacement, never wheel movement
+  made while the page was pending. No-op, failed, or superseded page requests
+  cannot leave an anchor for an unrelated later update.
+- A manual disclosure temporarily owns reading geometry without cancelling a
+  pending page read. Its title restores before prepend correction; continued
+  user scrolling hands the achieved geometry back to the original page anchor.
+  Neither transition starts a replacement read or applies insertion twice.
+- Retained panes save the latest laid-out user scroll position, ignore hidden
+  zero-offset events, and restore it before revealing the pane. Hiding suspends
+  an in-flight history anchor rather than cancelling the still-running page read.
+  A page committed while hidden applies its insertion correction once the pane
+  has layout again, after restoring the retained offset and before paint.
+- Session draft replacement and composer-height publication finish in the
+  layout phase. A newly revealed short transcript must not reserve the previous
+  session's composer height for its first visible frame.
+  Settings-hidden retained chat keeps its last positive measured reserve; a
+  hidden zero-height measurement cannot overwrite it before chat is revealed.
 - Turn-start following uses an immediate layout-phase update and then a
   frame-coalesced instant follow; it does not start overlapping smooth-scroll
   animations for token groups.
@@ -1510,11 +1616,11 @@ This does not prevent state changes — it makes them instant.
   layout changes (composer height, indicator rows) arrive after the fact and
   look like an upward gesture; because they have no preceding input they are
   ignored and follow mode is preserved.
-- Resize observers never synchronously measure every transcript row from their
-  callback. The one synchronous action they may take is the bottom re-pin of a
-  pinned, visible transcript (a single `scrollTo`), because a frame requested
-  from inside the callback lands after the current frame has already painted
-  the grown content unpinned (D287).
+- Resize observers do not repeatedly measure all mounted rows. A visible pinned
+  transcript may synchronously re-pin its bottom; a held disclosure may restore
+  its title and refresh the existing pending anchor's geometry. These corrections
+  run before paint: a frame requested inside the callback would paint the grown
+  content uncorrected first and snap it back in the following frame (D287).
 
 ## 11. Acceptance criteria
 

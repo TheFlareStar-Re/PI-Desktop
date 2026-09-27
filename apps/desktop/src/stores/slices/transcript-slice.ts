@@ -1,6 +1,5 @@
 import i18n from "i18next";
 import type {
-  ReviewRollbackResult,
   UiMessage,
 } from "@pi-desktop/shared";
 import { api } from "../../lib/api";
@@ -44,6 +43,7 @@ export function createTranscriptSlice({
   | "compactContext"
   | "retryAssistantMessage"
   | "editUserMessage"
+  | "prepareUserMessageEdit"
   | "retryLastPrompt"
   | "clearError"
   | "activateMessageRevision"
@@ -107,6 +107,14 @@ export function createTranscriptSlice({
       if (userIndex < 0) return;
       const root = state.messages[userIndex];
       await get().editUserMessage(root.id, root.content, root.attachments);
+    },
+
+    prepareUserMessageEdit: async (messageId, signal) => {
+      const prepared = await prepareTranscriptAction({ get, set }, runtime, messageId, signal);
+      const state = get();
+      if (!prepared || state.activeSessionId !== prepared.activeSessionId || state.isRunning) return null;
+      const message = state.messages.find((candidate) => candidate.id === messageId);
+      return message?.role === "user" && !message.sessionMessage ? message : null;
     },
 
     editUserMessage: async (messageId, content, attachments) => {
@@ -390,21 +398,41 @@ export function createTranscriptSlice({
     rollbackWorkspaceChange: async (messageId, snapshotId) => {
       const state = get();
       const sessionId = state.activeSessionId;
-      if (!sessionId || state.isRunning) return null;
+      if (!sessionId || state.isRunning || runtime.isSessionSelectionPending(sessionId)) return null;
       try {
         const result = await api.workspaceReviewRollback({ sessionId, snapshotId });
         if (result.status === "rolledBack" || result.status === "alreadyRolledBack") {
-          set((current) =>
-            current.activeSessionId === sessionId
-              ? {
-                  messages: current.messages.map((message) =>
-                    message.id === messageId
-                      ? withReviewChangeState(message, "rolledBack")
-                      : message,
-                  ),
-                }
-              : {},
-          );
+          set((current) => {
+            if (current.activeSessionId !== sessionId || runtime.isSessionSelectionPending(sessionId)) return {};
+            const updateMessage = (message: UiMessage) => message.id === messageId
+              ? withReviewChangeState(message, "rolledBack", result.snapshotId)
+              : message;
+            const view = current.transcriptViews[sessionId];
+            const viewMessages = view?.messages.map(updateMessage) ?? [];
+            const parentMessage = view?.parentMessage ? updateMessage(view.parentMessage) : undefined;
+            const viewChanged = view && (
+              viewMessages.some((message, index) => message !== view.messages[index]) ||
+              parentMessage !== view.parentMessage
+            );
+            return {
+              messages: current.messages.map(updateMessage),
+              // Historical summary navigation reads this range, not the live
+              // tail. Publish the host-confirmed state to both projections.
+              ...(viewChanged ? {
+                transcriptViews: {
+                  ...current.transcriptViews,
+                  [sessionId]: {
+                    ...view,
+                    // Replacing the view supersedes any pending history/search
+                    // read via its identity guard; release loading atomically.
+                    loading: null,
+                    messages: viewMessages,
+                    ...(parentMessage ? { parentMessage } : {}),
+                  },
+                },
+              } : {}),
+            };
+          });
         } else if (result.status === "conflict") {
           get().showToast(i18n.t("panel.review.rollbackConflict"), {
             variant: "warning",
