@@ -4906,6 +4906,8 @@ mod tests {
             id: "tool-review".into(),
             role: "tool".into(),
             content: stdout.clone(),
+            command: None,
+            skill_mentions: None,
             attachments: None,
             steering: None,
             created_at: "2026-09-20T00:00:00Z".into(),

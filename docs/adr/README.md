@@ -338,6 +338,7 @@ Each ADR includes:
 | 0306 | [Brazilian Portuguese (pt-BR) shell locale](0306-portuguese-brazil-shell-locale.md) | Accepted (amends ADR 0160 / 0183 / 0185) |
 | 0307 | [Sync the API-key service catalog with pi-ai's built-in providers](0307-pi-ai-api-key-provider-sync.md) | Accepted (amends ADR 0012 / 0020 / 0116 / 0155) |
 | turn-process-and-thinking-display | [Turn process and thinking presentation](turn-process-and-thinking-display.md) | Accepted |
+| shell-workspace-review-evidence | [Shell workspace review evidence](shell-workspace-review-evidence.md) | Accepted |
 | provider-display-order | [Provider display order](provider-display-order.md) | Accepted |
 | registry-header-variable-spelling | [Remote header variables accept the registry's `{name}` spelling](registry-header-variable-spelling.md) | Proposed |
 | provider-system-certificates | [Desktop sidecar uses OS-trusted certificates](provider-system-certificates.md) | Accepted |
