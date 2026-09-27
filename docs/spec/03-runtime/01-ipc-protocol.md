@@ -875,10 +875,15 @@ and a shown notification restores/shows and focuses the window before emitting
 task notification contract. Native delivery is best-effort; the durable
 inbox remains authoritative when the OS suppresses a banner. On Windows,
 Electron Main registers `net.aiuo.pi-desktop` as the process AppUserModelID
-before readiness and before any window is created. The ID matches the NSIS
+before readiness and before any window is created in packaged builds.
+Development launches use `net.aiuo.pi-desktop.dev` so a shortcut created for
+`electron.exe` cannot claim the packaged application's identity. Each
+taskbar-visible Windows window also supplies its AppUserModelID, relaunch
+command, display name, and icon explicitly. The packaged ID matches the NSIS
 package identity so notification attribution, notification settings, taskbar
 grouping, and installed shortcuts resolve to `PI-Desktop`, never the stock
-Electron host.
+Electron host. Legacy portable runs use `PORTABLE_EXECUTABLE_FILE` for relaunch
+and its pinned icon so the shortcut does not point into a temporary extraction.
 
 Task native objects are retained by durable notification id, with at most one
 live object per id. Replayed `showNative` requests do not create a second

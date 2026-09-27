@@ -734,10 +734,14 @@ Electron 拥有本机表面，而渲染器则派生本地化表面
 计划提醒和插件本机通知仍是独立合约。本机交付是尽力而为；耐用的
 收件箱仍是操作系统抑制横幅时的权威来源。在 Windows 上，
 Electron 主将 `net.aiuo.pi-desktop` 注册为进程 AppUserModelID
-在准备就绪之前和创建任何窗口之前。 ID 与 NSIS 匹配
-包标识所以通知属性、通知设置、任务栏
-分组，安装的快捷方式解析为 `PI-Desktop`，而不是库存
-Electron 主机。
+在准备就绪之前和创建任何窗口之前；开发版使用
+`net.aiuo.pi-desktop.dev`，避免指向 `electron.exe` 的开发快捷方式
+占用正式版身份。每个在任务栏显示的 Windows 窗口也显式设置
+AppUserModelID、重新启动命令、显示名称和图标。正式版 ID 与 NSIS
+包标识一致，使通知来源、通知设置、任务栏分组和安装的快捷方式
+显示为 `PI-Desktop`，而不是 Electron。旧便携版使用
+`PORTABLE_EXECUTABLE_FILE` 作为重新启动目标和固定图标来源，避免
+快捷方式指向临时解压目录。
 
 任务本机对象按持久 notification id 保留，每个 id 最多一个活动对象。
 重放的 `showNative` 请求不得创建第二个对象。`notification.markRead`、

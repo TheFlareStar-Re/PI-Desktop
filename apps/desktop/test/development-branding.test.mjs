@@ -21,6 +21,7 @@ const mainIndexSource = await readMainModule("index.ts");
 const brandingSource = await readMainModule("bootstrap/app-lifecycle.ts");
 const windowSource = await readMainModule("bootstrap/window.ts");
 const windowsIconSource = await readMainModule("windows-icon.ts");
+const windowsIdentitySource = await readMainModule("windows-app-identity.ts");
 const pluginPanelSource = await readMainModule("plugin-panel-host.ts");
 const startupSource = await readMainModule("bootstrap/startup.ts");
 const iconScriptSource = await readFile(
@@ -49,8 +50,16 @@ test("Windows runtime registers the canonical native application identity", () =
   assert.match(mainIndexSource, /app\.setName\(APP_NAME\)/);
   assert.match(
     mainIndexSource,
-    /process\.platform === "win32"[\s\S]*app\.setAppUserModelId\(APP_ID\)/,
+    /process\.platform === "win32"[\s\S]*app\.setAppUserModelId\(windowsAppUserModelId\(\)\)/,
   );
+  assert.match(windowsIdentitySource, /isDevelopmentIdentity\(\) \? `\$\{APP_ID\}\.dev` : APP_ID/);
+  assert.match(windowsIdentitySource, /window\.setAppDetails\(\{/);
+  assert.match(windowsIdentitySource, /relaunchDisplayName: isDevelopmentIdentity\(\)/);
+  assert.match(windowsIdentitySource, /appIconPath: iconPath/);
+  assert.match(windowsIdentitySource, /process\.env\.PORTABLE_EXECUTABLE_FILE/);
+  assert.match(windowsIdentitySource, /existsSync\(portableLauncher\)/);
+  assert.match(windowSource, /setWindowsWindowAppDetails\(window\)/);
+  assert.match(pluginPanelSource, /if \(!widget\) setWindowsWindowAppDetails\(win\)/);
 });
 
 test("Windows packages pin PI-Desktop executable and shortcut names", () => {
