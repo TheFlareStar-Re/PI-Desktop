@@ -19,7 +19,6 @@ import {
   assistantTurnUsage,
   assistantTurnOwnedToolsEqual,
   reuseReadonlyMap,
-  subagentRunsEqual,
   type AssistantTurnEntry,
   type AssistantTurnPart,
   type TranscriptEntry,

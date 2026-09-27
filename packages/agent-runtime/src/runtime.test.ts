@@ -1150,6 +1150,33 @@ describe("DesktopAgentRuntime configuration matching", () => {
     await runtime.dispose();
   });
 
+  it("formats scratch directory with forward slashes for POSIX shells", async () => {
+    const gitBash: CommandShellOption = {
+      id: "git-bash",
+      label: "Git Bash",
+      dialect: "posix",
+      available: true,
+      isDefault: false,
+    };
+    const windowsScratch = "C:\\Users\\User\\.pi-desktop\\scratch\\sess-123";
+    const runtime = createRuntime({
+      commandShell: gitBash,
+      scratchDir: windowsScratch,
+    });
+    const systemPrompt = (runtime as any).agent.state.systemPrompt as string;
+    const bash = (runtime as any).agent.state.tools.find(
+      (tool: any) => tool.name === "Bash",
+    );
+
+    const posixScratch = "C:/Users/User/.pi-desktop/scratch/sess-123";
+    expect(systemPrompt).toContain(`\`${posixScratch}\``);
+    expect(systemPrompt).toContain("in Bash: $PI_SCRATCH_DIR");
+    expect(systemPrompt).not.toContain(windowsScratch);
+    expect(bash.description).toContain(posixScratch);
+
+    await runtime.dispose();
+  });
+
   it("sends the default Bash timeout and preserves explicit overrides", async () => {
     const host = {
       call: vi.fn().mockResolvedValue({ ok: true, content: "done" }),
@@ -3559,6 +3586,39 @@ describe("DesktopAgentRuntime session collaboration provenance", () => {
     await runtime.dispose();
     await restored.dispose();
   });
+  it("replays every under-budget historical image as a provider image block", async () => {
+    const history: UiMessage[] = Array.from({ length: 6 }, (_, index) => {
+      const payload = Buffer.from(`historical-image-${index + 1}`).toString("base64");
+      return {
+        id: `image-${index + 1}`,
+        role: "user",
+        content: `image ${index + 1}`,
+        createdAt: new Date(Date.now() + index).toISOString(),
+        attachments: [
+          {
+            name: `image-${index + 1}.png`,
+            ref: `attachments/image-${index + 1}`,
+            kind: "image",
+            mimeType: "image/png",
+            data: payload,
+          },
+        ],
+      };
+    });
+    const runtime = createRuntime({ history });
+    try {
+      const messages = buildSessionContext((runtime as any).fullEntries).messages;
+      const imageBlocks = messages.flatMap((message) =>
+        message.role === "user" && Array.isArray(message.content)
+          ? message.content.filter((block) => block.type === "image")
+          : [],
+      );
+      expect(imageBlocks).toHaveLength(6);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
 });
 
 describe("DesktopAgentRuntime tool history restore (D120)", () => {

@@ -1,5 +1,6 @@
 import type {
   AgentEventEnvelope,
+  BrowserState,
   AgentQueueChangedEvent,
   AgentStatus,
   AppNotification,
@@ -389,6 +390,7 @@ export type AppState = {
   openTurnFileReview: (
     selection: Omit<WorkPanelReviewSelection, "revision">,
   ) => void;
+  updateBrowserWorkPanelTab: (state: BrowserState) => void;
 };
 
 export type AppStateData = {

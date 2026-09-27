@@ -93,18 +93,22 @@ test("main process registers update handlers and the auto-check lifecycle", () =
 });
 
 test("updater gates delivery mode by platform and delivery policy", () => {
-  // Packaged macOS, Windows NSIS, and Linux AppImage use in-app delivery.
-  // Dev builds are disabled outright.
-  assert.match(updaterSource, /if \(!isPackaged\) return "disabled"/);
-  assert.match(updaterSource, /win32.*in-app|in-app.*win32/s);
-  assert.match(
-    updaterSource,
-    /PORTABLE_EXECUTABLE_FILE[\s\S]*distribution === "zip"/,
-  );
+  // The pure policy tests cover platform capability and portable defaults.
+  assert.match(updaterSource, /resolveUpdateModePolicy/);
+  assert.match(updaterSource, /resolveDefaultUpdatePreference/);
+  assert.match(updaterSource, /supportsAutomaticUpdates/);
   assert.match(updaterSource, /piDistribution/);
   assert.match(updaterSource, /platform === "darwin"[\s\S]*return "in-app"/);
   assert.match(updaterSource, /APPIMAGE/);
-  assert.match(updaterSource, /autoInstallOnAppQuit = this\.state\.mode === "in-app"/);
+  assert.match(updaterSource, /this\.autoUpdater\.autoDownload = false/);
+  assert.match(updaterSource, /this\.autoUpdater\.autoInstallOnAppQuit = false/);
+  assert.match(updaterSource, /this\.autoUpdater\.autoDownload = mode === "in-app"/);
+  assert.match(updaterSource, /this\.autoUpdater\.autoInstallOnAppQuit = mode === "in-app"/);
+  assert.match(updaterSource, /this\.applyPreference\(preference, false\)/);
+  assert.match(updaterSource, /manualReminderTracker/);
+  assert.match(updaterSource, /applyPreference\(this\.preference, false\)/);
+  assert.match(updaterSource, /resolveStoredUpdatePreference/);
+  assert.match(updaterSource, /if \(!preferenceChanged\) return/);
   assert.match(
     updaterSource,
     /allowPrerelease = false/,
@@ -165,9 +169,11 @@ test("updater gates delivery mode by platform and delivery policy", () => {
   );
 });
 
-test("Star builds keep update discovery manual and reject in-app delivery", () => {
+test("Star builds keep release checks manual and reject automatic delivery", () => {
   assert.match(updaterSource, /this\.isStarBuild = options\.currentVersion\.endsWith\("-Star"\)/);
-  assert.match(updaterSource, /this\.isStarBuild && deliveryMode === "in-app"[\s\S]*?"manual"/);
+  assert.match(updaterSource, /this\.defaultPreference = this\.isStarBuild\s*\?\s*"manual"/);
+  assert.match(updaterSource, /this\.preference = this\.defaultPreference/);
+  assert.match(updaterSource, /\) && !this\.isStarBuild/);
   assert.match(updaterSource, /this\.isStarBuild && !options\.manual\) return this\.state/);
   assert.match(updaterSource, /startAutoCheck\(\) \{[\s\S]*?if \([\s\S]*?this\.isStarBuild/);
   assert.match(updaterSource, /install\(\): void \{[\s\S]*?this\.state\.mode !== "in-app"/);
@@ -184,8 +190,11 @@ test("renderer exposes the updates API, banner and settings row", () => {
   assert.match(bannerSource, /releaseNotes/);
   assert.match(bannerSource, /availableVersion}:\$\{update\.status/);
   assert.match(bannerSource, /className="update-notice"/);
+  assert.match(bannerSource, /manualReminder === true/);
   assert.match(bannerSource, /role="progressbar"/);
-  assert.match(settingsSource, /<UpdatesRow currentVersion=/);
+  assert.match(settingsSource, /<UpdatesRow[\s\S]*currentVersion=\{version\?\.version\}/);
+  assert.match(settingsSource, /settings=\{settings\}/);
+  assert.match(settingsSource, /saveSettings=\{saveSettings\}/);
   assert.match(settingsSource, /update-settings-notes/);
   assert.match(settingsSource, /updates\.whatsNew/);
   assert.match(settingsSource, /updates\.releaseNotes/);
@@ -229,6 +238,13 @@ test("check-for-updates is reachable from the application menu", () => {
       "closeReleaseNotes",
       "currentBadge",
       "availableBadge",
+      "preferenceTitle",
+      "preferenceDesc",
+      "automatic",
+      "manual",
+      "automaticUnsupported",
+      "automaticPortableWarning",
+      "preferenceSaveFailed",
     ]) {
       assert.match(source, new RegExp(`${key}:`), key);
     }
@@ -313,10 +329,23 @@ test("shared shipped-locale changelog is the in-app notes source of truth", () =
   assert.match(changelogSource, /version: "0\.2\.7"/);
   assert.match(
     mainSource,
-    /getLocale:\s*\(\)\s*=>\s*updaterLocale/,
+    /getLocale:\s*\(\)\s*=>\s*(?:updaterLocale|mainState\.updaterLocale)/,
     "Main supplies product locale to the updater for note selection",
   );
   assert.match(mainSource, /updater\.refreshReleaseNotes\(\)/);
   assert.match(stylesSource, /\.update-notice-notes/);
   assert.match(stylesSource, /\.update-settings-notes/);
+});
+
+test("update cache relocation and cleanup preserve the delta-update path", async () => {
+  const updateCacheSource = await read("../electron/main/update-cache.ts");
+  const maintenanceSource = await read("../electron/main/update-cache-maintenance.ts");
+  assert.match(updateCacheSource, /PI_DESKTOP_UPDATE_CACHE_DIR/);
+  assert.match(updaterSource, /new RelocatedNsisUpdater\(baseCachePath\)/);
+  assert.match(updaterSource, /relocateUpdateCacheBasePath\(this\.app, baseCachePath\)/);
+  assert.match(maintenanceSource, /readFileSync\([\s\S]*app-update\.yml/);
+  assert.match(mainSource, /reclaimRelocatedUpdateCache/);
+  assert.match(updateCacheSource, /UPDATE_INSTALLER_BASELINE_NAME/);
+  assert.match(updateCacheSource, /UPDATE_BLOCKMAP_BASELINE_NAME/);
+  assert.match(updateCacheSource, /UPDATE_DOWNLOAD_DIR_NAME/);
 });

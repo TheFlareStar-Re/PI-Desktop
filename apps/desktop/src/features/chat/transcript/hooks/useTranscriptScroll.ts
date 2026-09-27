@@ -45,7 +45,6 @@ import { useTranscriptSearchFocus } from "../../../../hooks/use-transcript-searc
 
 import { useTranscriptPrepend } from "./useTranscriptPrepend";
 import { useTranscriptProjection } from "./useTranscriptProjection";
-
 type UseTranscriptScrollOptions = {
   sessionId: string | undefined;
   messages: UiMessage[];
