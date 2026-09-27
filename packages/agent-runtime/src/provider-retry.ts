@@ -559,7 +559,7 @@ export const STREAM_IDLE_TIMEOUT_DEFAULT_MS = 180_000;
 export const STREAM_IDLE_TIMEOUT_FLOOR_MS = PROVIDER_RATE_LIMIT_MAX_DELAY_MS;
 
 /**
- * `PI_DESKTOP_STREAM_IDLE_TIMEOUT_MS` overrides the zero-event idle budget;
+ * `PI_DESKTOP_STREAM_IDLE_TIMEOUT_MS` overrides the no-progress idle budget;
  * `0` disables the watchdog, and any other override is clamped up to
  * `STREAM_IDLE_TIMEOUT_FLOOR_MS` (see above). A value that is not a number, or
  * is negative, keeps the default.
@@ -578,16 +578,17 @@ export function streamIdleTimeoutMs(): number {
 }
 
 function streamIdleTimeoutMessage(timeoutMs: number): string {
-  return `stream stalled: no provider events for ${timeoutMs}ms`;
+  return `stream stalled: no provider progress for ${timeoutMs}ms`;
 }
 
 /**
- * Zero-event idle watchdog around a provider stream. Every event resets the
- * timer and total stream duration is never limited, so a long but productive
- * stream is forwarded unchanged. A stream that stays silent for `timeoutMs` is
- * ended as a `STREAM_FAILED`-classified error result — the same shape a dropped
- * socket produces — so the existing transient retry budget picks it up instead
- * of adding a second recovery path.
+ * Progress watchdog around a provider stream. Only non-empty text, thinking,
+ * or tool-call deltas reset the timer; setup and empty metadata events do not
+ * keep a stalled stream alive. Total stream duration is never limited, so a
+ * long but productive stream is forwarded unchanged. A stream without progress
+ * for `timeoutMs` ends as a `STREAM_FAILED`-classified error result — the same
+ * shape a dropped socket produces — so the existing transient retry budget
+ * picks it up instead of adding a second recovery path.
  *
  * `onStall` is the caller's chance to *stop* what this watchdog abandons, and a
  * caller that can must pass it. The wrapper sits outside the retry adapter, so
@@ -610,12 +611,13 @@ export function withStreamIdleTimeout(
 
   void (async () => {
     const iterator = inner[Symbol.asyncIterator]();
+    let lastProgressAt = Date.now();
     for (;;) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const idle = new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error(streamIdleTimeoutMessage(timeoutMs))),
-          timeoutMs,
+          Math.max(0, timeoutMs - (Date.now() - lastProgressAt)),
         );
       });
       let step: IteratorResult<AssistantMessageEvent>;
@@ -643,6 +645,14 @@ export function withStreamIdleTimeout(
         return;
       }
       outer.push(step.value);
+      if (
+        (step.value.type === "text_delta" ||
+          step.value.type === "thinking_delta" ||
+          step.value.type === "toolcall_delta") &&
+        step.value.delta.length > 0
+      ) {
+        lastProgressAt = Date.now();
+      }
       if (step.value.type === "done" || step.value.type === "error") {
         return;
       }

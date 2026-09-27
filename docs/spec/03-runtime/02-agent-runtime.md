@@ -204,6 +204,15 @@ independent recovered outages must not eventually stop because earlier tool
 rounds consumed the budget. One-shot completions still use one bounded budget
 for their single response. Persistent failures remain bounded and abortable.
 
+The main provider stream has a 180-second no-progress watchdog. Non-empty text,
+thinking, and tool-call argument deltas renew its deadline; setup, framing, and
+empty delta events do not. A stream that stops making progress ends as
+`STREAM_FAILED` and uses the existing bounded transient recovery path. The
+runtime aborts the abandoned request before retrying, while a productive stream
+has no total-duration limit. A positive `PI_DESKTOP_STREAM_IDLE_TIMEOUT_MS`
+override is clamped to at least the maximum retry backoff; `0` disables the
+watchdog.
+
 Before surfacing a pre-stream `PROVIDER_ERROR` for HTTP 400/422 whose message
 ends in `(no body)`, the runtime makes at most one silent repair attempt with
 the generated output-limit fields removed: `max_tokens`,

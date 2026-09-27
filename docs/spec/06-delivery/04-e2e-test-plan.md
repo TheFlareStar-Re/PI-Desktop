@@ -5622,6 +5622,23 @@ must keep splitting are covered by `markdown-blocks.test.mjs`.
   `stream-coalescer.test.ts`, `streaming-benchmark.test.ts`,
   `assistant-turns.test.mjs`); rendered long-turn scenario Draft
 
+#### E2E-STREAM-empty-events-do-not-hide-stall
+
+- **Preconditions**: Isolated desktop profile with a controllable streaming
+  provider; start an Agent or Goal turn with a short test-only idle budget.
+- **Steps**: Send partial assistant text, then keep the stream open while
+  emitting framing and empty tool-call deltas without content past the idle
+  budget. Repeat with non-empty thinking and tool-call deltas before the budget.
+- **Expected**: Empty events do not leave the turn processing indefinitely. The
+  stalled attempt is aborted and enters bounded transient recovery without a
+  duplicate concurrent request; after recovery or budget exhaustion, the turn
+  reaches a terminal state. Non-empty output renews the deadline and is not
+  interrupted while it continues to make progress.
+- **Specs linked**: `03-runtime/02-agent-runtime.md`
+- **Acceptance**: C (chat stream), Quality
+- **Milestone**: Maintenance
+- **Status**: Unit-covered (`provider-retry.test.ts`); desktop fixture pending
+
 #### E2E-084: Long tool loop compacts before the provider context limit
 
 - **Preconditions**: Provider configured with known pi-ai context/output

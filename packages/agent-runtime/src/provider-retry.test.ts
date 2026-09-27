@@ -1123,7 +1123,7 @@ describe("stream idle watchdog", () => {
     }
   });
 
-  it("resets the idle timer on every event", async () => {
+  it("resets the idle timer only on substantive provider output", async () => {
     vi.useFakeTimers();
     try {
       const slow = createAssistantMessageEventStream();
@@ -1134,16 +1134,86 @@ describe("stream idle watchdog", () => {
       const collected = (async () => {
         for await (const event of wrapped) events.push(event.type);
       })();
-      // An event at t=800 re-arms the watchdog; without the reset the stream
+      // A text delta at t=800 re-arms the watchdog; without the reset the stream
       // would already have failed at t=1000.
       await vi.advanceTimersByTimeAsync(800);
-      slow.push({ type: "text_start", contentIndex: 0, partial: assistantMessage() });
+      slow.push({
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "answer",
+        partial: assistantMessage(),
+      });
       await vi.advanceTimersByTimeAsync(800);
-      expect(events).toEqual(["start", "text_start"]);
-      await vi.advanceTimersByTimeAsync(400);
+      expect(events).toEqual(["start", "text_delta"]);
+      await vi.advanceTimersByTimeAsync(200);
       await collected;
-      expect(events).toEqual(["start", "text_start", "error"]);
+      expect(events).toEqual(["start", "text_delta", "error"]);
       expect((await wrapped.result()).errorMessage).toContain("stream stalled");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let setup or empty delta events hide a stalled stream", async () => {
+    vi.useFakeTimers();
+    try {
+      const slow = createAssistantMessageEventStream();
+      slow.push({ type: "start", partial: assistantMessage() });
+      const wrapped = withStreamIdleTimeout(slow, model, 1_000);
+
+      const events: string[] = [];
+      const collected = (async () => {
+        for await (const event of wrapped) events.push(event.type);
+      })();
+      await vi.advanceTimersByTimeAsync(400);
+      slow.push({ type: "text_start", contentIndex: 0, partial: assistantMessage() });
+      await vi.advanceTimersByTimeAsync(400);
+      slow.push({
+        type: "toolcall_delta",
+        contentIndex: 1,
+        delta: "",
+        partial: assistantMessage(),
+      });
+      await vi.advanceTimersByTimeAsync(200);
+      await collected;
+
+      expect(events).toEqual(["start", "text_start", "toolcall_delta", "error"]);
+      expect((await wrapped.result()).errorMessage).toContain("no provider progress");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("treats reasoning and tool-call arguments as progress", async () => {
+    vi.useFakeTimers();
+    try {
+      const slow = createAssistantMessageEventStream();
+      slow.push({ type: "start", partial: assistantMessage() });
+      const wrapped = withStreamIdleTimeout(slow, model, 1_000);
+
+      const events: string[] = [];
+      const collected = (async () => {
+        for await (const event of wrapped) events.push(event.type);
+      })();
+      await vi.advanceTimersByTimeAsync(800);
+      slow.push({
+        type: "thinking_delta",
+        contentIndex: 0,
+        delta: "thought",
+        partial: assistantMessage(),
+      });
+      await vi.advanceTimersByTimeAsync(800);
+      slow.push({
+        type: "toolcall_delta",
+        contentIndex: 1,
+        delta: '{"path":',
+        partial: assistantMessage(),
+      });
+      await vi.advanceTimersByTimeAsync(800);
+      expect(events).toEqual(["start", "thinking_delta", "toolcall_delta"]);
+      await vi.advanceTimersByTimeAsync(200);
+      await collected;
+      expect(events).toEqual(["start", "thinking_delta", "toolcall_delta", "error"]);
     } finally {
       vi.useRealTimers();
     }
