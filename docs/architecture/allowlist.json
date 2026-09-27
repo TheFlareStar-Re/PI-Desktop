@@ -1,8 +1,11 @@
 {
   "typescript": {
     "apps/desktop/electron/main/bootstrap/window.ts": "Existing window lifecycle extraction from the main-process facade; further decomposition is outside this follow-up scope.",
+    "apps/desktop/src/components/settings/ConfigSyncPage.tsx": "Upstream configuration-sync page is migrated intact into the Star fork; split its UI sections after the upstream sync flow stabilises.",
     "packages/agent-runtime/src/native-pi-session.test.ts": "Native Pi continuation regression coverage is kept with the source boundary while the protocol and fixture contract stabilise; split by lifecycle once the native adapter surface settles.",
-    "packages/agent-runtime/src/native-pi-session.ts": "Native Pi discovery, immutable projection, guarded continuation, and fork publication share one sidecar-private source boundary; split by lifecycle once the native adapter contract stabilises without widening path ownership."
+    "packages/agent-runtime/src/native-pi-session.ts": "Native Pi discovery, immutable projection, guarded continuation, and fork publication share one sidecar-private source boundary; split by lifecycle once the native adapter contract stabilises without widening path ownership.",
+    "packages/i18n/src/locales/pt-BR/index.ts": "Brazilian Portuguese locale is kept as one catalog to match the other locale files during the upstream migration; split locale catalogs together if their structure changes.",
+    "packages/shared/src/changelog-pt-BR.ts": "Brazilian Portuguese changelog follows the single-file structure of the other translated catalogs during the upstream migration; split all catalogs together if that structure changes."
   },
   "rust": {
     "crates/host-core/src/rpc/mod.rs": "Legacy RPC dispatch module; its extraction is outside this refactor scope.",
