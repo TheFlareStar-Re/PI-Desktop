@@ -104,7 +104,7 @@ test("updater gates delivery mode by platform and delivery policy", () => {
   assert.match(updaterSource, /piDistribution/);
   assert.match(updaterSource, /platform === "darwin"[\s\S]*return "in-app"/);
   assert.match(updaterSource, /APPIMAGE/);
-  assert.match(updaterSource, /autoInstallOnAppQuit = true/);
+  assert.match(updaterSource, /autoInstallOnAppQuit = this\.state\.mode === "in-app"/);
   assert.match(
     updaterSource,
     /allowPrerelease = false/,
@@ -163,6 +163,14 @@ test("updater gates delivery mode by platform and delivery policy", () => {
     /status === "checking"[\s\S]*status: "idle"/,
     "a timed-out auto-check must leave checking so the next interval can run",
   );
+});
+
+test("Star builds keep update discovery manual and reject in-app delivery", () => {
+  assert.match(updaterSource, /this\.isStarBuild = options\.currentVersion\.endsWith\("-Star"\)/);
+  assert.match(updaterSource, /this\.isStarBuild && deliveryMode === "in-app"[\s\S]*?"manual"/);
+  assert.match(updaterSource, /this\.isStarBuild && !options\.manual\) return this\.state/);
+  assert.match(updaterSource, /startAutoCheck\(\) \{[\s\S]*?if \([\s\S]*?this\.isStarBuild/);
+  assert.match(updaterSource, /install\(\): void \{[\s\S]*?this\.state\.mode !== "in-app"/);
 });
 
 test("renderer exposes the updates API, banner and settings row", () => {

@@ -89,3 +89,11 @@ builds NSIS and ZIP separately and stamps the ZIP app metadata with
 even though ordinary ZIP launches do not set `PORTABLE_EXECUTABLE_FILE`. Users
 extract the archive and run `PI-Desktop.exe`; the NSIS lane and existing data
 directory remain unchanged.
+
+## Amendment (Star distribution)
+
+Packaged versions ending in `-Star` keep release discovery available only on
+explicit request. They use manual delivery on every platform, do not schedule
+background checks, and cannot download or install official releases in-app.
+This prevents an official stable release from replacing a Star build without
+the user's action. The ordinary stable and RC update lanes are unchanged.

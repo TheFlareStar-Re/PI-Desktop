@@ -11,6 +11,7 @@
  *    `PORTABLE_EXECUTABLE_FILE`) → notify + link. The
  *    NSIS installer must not replace a no-install run.
  *  - Linux deb (no $APPIMAGE in env) → notify + link.
+ *  - Star builds → manual notify + link, with no background checks or install.
  *  - Unpackaged dev runs → disabled (no app-update.yml in resources).
  */
 import { readFileSync } from "node:fs";
@@ -81,6 +82,7 @@ export class AppUpdaterController {
   private readonly logger: Logger;
   private readonly send: (channel: string, payload: unknown) => void;
   private readonly getLocale: () => string | null | undefined;
+  private readonly isStarBuild: boolean;
   private state: UpdateState;
   private manualRequested = false;
   private initialTimer: NodeJS.Timeout | null = null;
@@ -126,6 +128,7 @@ export class AppUpdaterController {
     this.logger = options.logger;
     this.send = options.send;
     this.getLocale = options.getLocale ?? (() => "en");
+    this.isStarBuild = options.currentVersion.endsWith("-Star");
     const platform = options.platform ?? process.platform;
     const isPackaged = options.isPackaged ?? app.isPackaged;
     const distribution =
@@ -133,12 +136,16 @@ export class AppUpdaterController {
       (platform === "win32"
         ? this.readPackagedDistribution(isPackaged)
         : undefined);
-    const mode = resolveUpdateMode(
+    const deliveryMode = resolveUpdateMode(
       platform,
       isPackaged,
       process.env,
       distribution,
     );
+    const mode =
+      this.isStarBuild && deliveryMode === "in-app"
+        ? "manual"
+        : deliveryMode;
     this.state = {
       mode,
       status: "idle",
@@ -165,9 +172,8 @@ export class AppUpdaterController {
     // newer stable release such as 0.2.2. Always track GitHub's latest
     // stable release so RC installs can graduate to stable.
     autoUpdater.allowPrerelease = false;
-    // Even if the user ignores the restart prompt, a downloaded update
-    // lands on the next normal quit.
-    autoUpdater.autoInstallOnAppQuit = true;
+    // Install on quit only for builds that can download updates in-app.
+    autoUpdater.autoInstallOnAppQuit = this.state.mode === "in-app";
     autoUpdater.logger = {
       info: (m: unknown) =>
         this.logger.app("updater", "info", "updater diagnostic", {
@@ -257,6 +263,7 @@ export class AppUpdaterController {
     if (this.state.mode === "disabled") {
       throw new Error("updates are disabled in development builds");
     }
+    if (this.isStarBuild && !options.manual) return this.state;
     if (
       this.state.status === "checking" ||
       this.state.status === "downloading" ||
@@ -327,7 +334,7 @@ export class AppUpdaterController {
 
   /** Quit and install a downloaded update (in-app mode). */
   install(): void {
-    if (this.state.status !== "downloaded") {
+    if (this.state.mode !== "in-app" || this.state.status !== "downloaded") {
       throw new Error("no downloaded update to install");
     }
     // Marked before the call: quitAndInstall spawns the installer itself, so
@@ -349,7 +356,12 @@ export class AppUpdaterController {
    * first window or pin the updater on `checking`.
    */
   startAutoCheck() {
-    if (this.state.mode === "disabled" || this.initialTimer || this.intervalTimer) {
+    if (
+      this.isStarBuild ||
+      this.state.mode === "disabled" ||
+      this.initialTimer ||
+      this.intervalTimer
+    ) {
       return;
     }
     this.initialTimer = setTimeout(() => {

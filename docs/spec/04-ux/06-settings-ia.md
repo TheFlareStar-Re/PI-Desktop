@@ -734,6 +734,9 @@ system while preserving their different data ownership:
   never accepts a renderer-supplied destination (D313 / ADR 0157)
 - Updates row with the current delivery state and one applicable action:
   Check for updates, View release, or Restart to update
+- Packaged `-Star` builds use manual release discovery. They do not schedule
+  background update checks, download updates, or install them on quit. A manual
+  check can show the release page, leaving installation to the user.
 - **Developer** card:
   - developer mode is off unless the optional persisted
     `AppSettings.developerMode` value is `true`
