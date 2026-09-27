@@ -454,7 +454,6 @@ export function createWorkPanelSlice({
       reviewSelection,
     };
     set({
-      subagentPanel: null,
       workPanelOpen: true,
       workPanelTabs: next.tabs,
       activeWorkPanelTabId: next.activeTabId,

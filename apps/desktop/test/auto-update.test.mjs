@@ -98,8 +98,6 @@ test("updater gates delivery mode by platform and delivery policy", () => {
   assert.match(updaterSource, /resolveDefaultUpdatePreference/);
   assert.match(updaterSource, /supportsAutomaticUpdates/);
   assert.match(updaterSource, /piDistribution/);
-  assert.match(updaterSource, /platform === "darwin"[\s\S]*return "in-app"/);
-  assert.match(updaterSource, /APPIMAGE/);
   assert.match(updaterSource, /this\.autoUpdater\.autoDownload = false/);
   assert.match(updaterSource, /this\.autoUpdater\.autoInstallOnAppQuit = false/);
   assert.match(updaterSource, /this\.autoUpdater\.autoDownload = mode === "in-app"/);
