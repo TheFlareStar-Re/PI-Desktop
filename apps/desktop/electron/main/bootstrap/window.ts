@@ -32,16 +32,7 @@ import {
 import { readWindowState, writeWindowState } from "../window-preferences";
 import { suppressLinuxFramelessSystemMenu } from "../frameless-system-menu";
 import { recoverRendererAfterGone } from "../renderer-recovery";
-
-function windowsIconPath(): string | undefined {
-  if (process.platform !== "win32") return undefined;
-
-  const resourceRoot = app.isPackaged
-    ? process.resourcesPath
-    : join(app.getAppPath(), "build");
-  const iconPath = join(resourceRoot, app.isPackaged ? "app-icon.ico" : "icon.ico");
-  return existsSync(iconPath) ? iconPath : undefined;
-}
+import { windowsIconPath } from "../windows-icon";
 
 export type WindowLifecycleState = {
   mainWindow: BrowserWindow | null;

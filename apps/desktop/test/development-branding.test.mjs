@@ -20,6 +20,8 @@ const mainSource = await readMainSource();
 const mainIndexSource = await readMainModule("index.ts");
 const brandingSource = await readMainModule("bootstrap/app-lifecycle.ts");
 const windowSource = await readMainModule("bootstrap/window.ts");
+const windowsIconSource = await readMainModule("windows-icon.ts");
+const pluginPanelSource = await readMainModule("plugin-panel-host.ts");
 const startupSource = await readMainModule("bootstrap/startup.ts");
 const iconScriptSource = await readFile(
   new URL("../../../scripts/make-icon.py", import.meta.url),
@@ -69,10 +71,11 @@ test("Windows packages and windows use the canonical PI-Desktop icon", () => {
   assert.ok(windowsIcon.readUInt16LE(4) >= 4, "ICO must contain multiple sizes");
   assert.match(iconScriptSource, /windows_icon = BUILD \/ "icon\.ico"/);
   assert.match(iconScriptSource, /format="ICO"/);
-  assert.match(windowSource, /function windowsIconPath\(\)/);
-  assert.match(windowSource, /app\.isPackaged\s*\n?\s*\?\s*process\.resourcesPath/);
-  assert.match(windowSource, /app-icon\.ico/);
+  assert.match(windowsIconSource, /function windowsIconPath\(\)/);
+  assert.match(windowsIconSource, /app\.isPackaged\s*\n?\s*\?\s*process\.resourcesPath/);
+  assert.match(windowsIconSource, /app-icon\.ico/);
   assert.match(windowSource, /icon: windowsIconPath\(\)/);
+  assert.match(pluginPanelSource, /icon: windowsIconPath\(\)/);
 });
 
 test("Linux packages align the desktop entry with the Wayland app identity", () => {
