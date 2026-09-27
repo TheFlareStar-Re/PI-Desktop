@@ -77,7 +77,12 @@ OpenCode Go 以一个名为 `opencode_go` 的 API 风格预设暴露。它仍然
 主机为 `opencode.ai` 的自定义 OpenAI 兼容行也会收到同样的标头。系统不依赖
 pi-ai 去发出 `x-opencode-session`。每个提供商行（AI 服务或 OAuth 账户）都可以
 设置可选的 `headers`；留空则保持适配器默认值。一层 fetch 包装是最后的写入方，
-因此 Codex 与 Anthropic 无法覆盖它们。
+因此 Codex 与 Anthropic 无法覆盖它们。pi-ai 的 Google 适配器
+（`google-generative-ai`、`google-vertex`）会拒绝任何不是 `globalThis.fetch`
+的 `fetch`，因此发往它们的请求不带 fetch，只通过合并后的 `headers` 送达 SDK
+客户端；调用方传入的 `fetch` 会被清除而非包装（issue #1072）。由于这些适配器既看不到包装、也从不调用
+`onResponse`，这样的行不上报捕获到的 HTTP 状态与传输原因：`Retry-After`
+退回有界退避阶梯，issue-234 的传输诊断与重建对它不生效。
 
 当 OAuth 厂商围绕本地 provider 行 id 重建运行时模型时，运行时仍保留 pi-ai
 原生传输元数据，不会把该行当作普通 OpenAI 端点。GitHub Copilot 请求会保留
@@ -101,6 +106,20 @@ pi-ai 去发出 `x-opencode-session`。每个提供商行（AI 服务或 OAuth �
 用文档化的非空占位符而不是 `""` 填补缺失推理（OpenCode / 第三方中转在压缩后拒绝空回传；
 见 ADR 0256 / #296）。官方 `deepseek.com` 行仍使用空串回填（#223）。该覆盖不改
 `thinkingFormat`。
+
+当 models.dev 记录发布了推理 `effort` 选项且没有 `budget_tokens` 选项时
+（例如 Opus 4.7+、Opus 5.x、Fable），Anthropic Messages 请求会设置
+`forceAdaptiveThinking: true`。这些模型会以 HTTP 400 拒绝
+`thinking.type=enabled`，而 models.dev 不携带 pi-ai 的 compat 记录，缺少该标志时
+pi-ai 会回落到 budget 思考。仍发布 `budget_tokens` 的模型保持 budget 思考，显式的
+目录 `compat` 记录会被保留。
+
+目录无法识别的 Anthropic Messages 行（例如某个自定义网关 URL 提供多家发布方都列出的
+模型 ID）仍回退到通用模型形状，但当 Anthropic 自己的 models.dev 记录中存在完全相同的
+模型 ID 时，会采用该记录的 `reasoning_options` 及派生的 `thinkingLevelMap`。Claude
+模型接受哪种思考形状是模型本身的属性，而非部署的属性，因此只迁移这两个字段；上下文与
+模态限制保持通用值，别名、改名后的 ID、其他 wire API，以及通过 Anthropic 协议提供的
+非 Claude 模型均不受影响（#990）。
 
 ## 5. 内置供应商矩阵（发货意图）
 
@@ -205,7 +224,7 @@ PI-Desktop 不得把用户永久限制在一份简短的固定模型列表上。
     因此没有目录默认值）。启用后，当模型解析到 `anthropic-messages`、
     `openai-responses`、`azure-openai-responses` 或 `openai-codex-responses`
     （存储的 apiStyle 为 `anthropic_messages`、`responses` 或
-    `openai_codex_responses`）时，适配器附加提供商托管搜索工具
+    `openai_codex_responses`，或从 Chat Completions 解析到已确认的官方搜索路径）时，适配器附加提供商托管搜索工具
     （`web_search_20250305` / `web_search`），将活动写入
     `UiMessage.hostedSearch`，并在后续回合（含重启后）回放原始数据（ADR 0297）。
     OpenAI OAuth 使用独立的 Codex Responses 适配器和 ChatGPT 订阅端点，不是公开的
@@ -674,3 +693,11 @@ OpenAI Responses 适配器必须把 `response.completed`（以及
 已知目标模型时，估算遵守该适配器既有的模型切换回放边界。压缩序列化把搜索投影传入摘要请求，
 不伪装成客户端工具调用。被压缩前缀转为生成的文本摘要；保留尾部中的原始搜索仍按既有规则回放，
 不承诺摘要无损保留原始搜索块。
+
+### 搜索配置引导
+
+搜索开关与运行时共用请求路由判断。官方 DeepSeek、xAI 和旧 OpenAI Chat Completions
+配置开启搜索后，内部使用已确认的搜索接口，不增加第二个服务，不改写连接设置。
+其他模型及关闭搜索的请求继续使用原协议，搜索默认关闭。路由只匹配精确来源和路径，
+不根据展示名称或模型名推断。最终适配器继续负责搜索解析和历史回放。
+未集成格式显示“应用尚未适配”，不冒充厂商能力结论。详见提供商配置规格。

@@ -76,7 +76,14 @@ conversation id (or a per-call UUID when the caller has no session),
 host is `opencode.ai` receives the same headers. pi-ai is not relied on to
 emit `x-opencode-session`. Each provider row (AI service or OAuth account)
 may set optional `headers`; empty keeps adapter defaults. A fetch wrapper is
-the last writer so Codex and Anthropic cannot overwrite them.
+the last writer so Codex and Anthropic cannot overwrite them. pi-ai's Google
+adapters (`google-generative-ai`, `google-vertex`) reject any `fetch` that is
+not `globalThis.fetch`, so a request bound for them carries none — the merged
+`headers` still reach the SDK client — and a caller-supplied `fetch` is cleared
+rather than wrapped (issue #1072). Because those adapters never see the wrapper and never call
+`onResponse`, such a row reports no captured HTTP status and no captured
+transport cause: `Retry-After` falls back to the bounded backoff ladder, and
+the issue-234 transport diagnostics and rebuild do not fire for it.
 
 When an OAuth vendor is rebuilt around a local provider-row id, runtime keeps
 the native pi-ai transport metadata instead of treating the row as a generic
@@ -106,6 +113,24 @@ missing reasoning is filled with a documented placeholder instead of `""`
 (OpenCode / third-party relays reject empty echoes after compaction; see
 ADR 0256 / #296). Official `deepseek.com` rows keep empty-string fill (#223).
 The overlay does not change `thinkingFormat`.
+
+Anthropic Messages requests set `forceAdaptiveThinking: true` when the
+models.dev record publishes a reasoning `effort` option and no
+`budget_tokens` option (for example Opus 4.7+, Opus 5.x, Fable). Those models
+reject `thinking.type=enabled` with HTTP 400, and models.dev carries no pi-ai
+compat record, so without the flag pi-ai would fall back to budget thinking.
+Models that still publish `budget_tokens` keep budget thinking, and an
+explicit catalog `compat` record is preserved.
+
+An Anthropic Messages row the catalog cannot identify (for example a custom
+gateway URL serving an id several publishers list) still falls back to the
+generic model shape, but takes `reasoning_options` and the derived
+`thinkingLevelMap` from Anthropic's own models.dev record when that record
+has exactly the same model id. Which thinking shape a Claude id accepts is a
+property of the model, not of the deployment, so only those two fields
+transfer; limits and modalities stay generic, and aliases, renamed ids, other
+wire APIs, and non-Claude ids served over the Anthropic protocol are unchanged
+(#990).
 
 ## 5. Built-in vendor matrix (ship intent)
 
@@ -230,7 +255,8 @@ PI-Desktop must not permanently restrict users to a short fixed model list.
     When enabled and the model resolves to `anthropic-messages`,
     `openai-responses`, `azure-openai-responses`, or
     `openai-codex-responses` (stored apiStyle `anthropic_messages`, `responses`,
-    or `openai_codex_responses`), the adapter attaches the provider's hosted
+    or `openai_codex_responses`, or a published official search route from
+    Chat Completions), the adapter attaches the provider's hosted
     search tool (`web_search_20250305` / `web_search`), extracts activity into
     `UiMessage.hostedSearch` (`rounds` for display, `replay` for convertMessages),
     and restores raw blocks on later turns including after restart (ADR 0297).
@@ -783,3 +809,15 @@ fix.
 - Automatic paid-plan discovery for every vendor portal
 - Proprietary non-HTTP SDKs without pi-ai support
 - Cloud-synced provider profiles
+
+### Search setup guidance
+
+The search checkbox uses the same request-only transport resolver as the
+runtime. An opted-in official DeepSeek, xAI or legacy OpenAI Chat Completions
+model can use its published search interface without another service entry or
+changes to stored connection settings. Other models and search-off requests
+keep their configured transport. Search is off by default. Known routes match
+exact origins and paths, never display names or model substrings.
+The resolved adapter remains authoritative for search extraction and replay.
+Unknown connection formats are described as not integrated by this app rather
+than unsupported by the vendor. See the provider configuration specification.

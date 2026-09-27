@@ -8,10 +8,10 @@ import type {
 } from "@pi-desktop/shared";
 import {
   isSessionThinkingLevel,
-  modelIdsMatch,
   PERMISSION_MODES,
   sessionThinkingMenuLevels,
 } from "@pi-desktop/shared";
+import { sameComposerModelId } from "../../../lib/composer-models";
 import { providerThinkingLevels } from "../../../lib/session-thinking";
 
 export const COMPOSER_MIN_HEIGHT_PX = 28;
@@ -65,7 +65,7 @@ export type ComposerFileReference = {
   token?: string;
 };
 
-export type ComposerMenuView = "root" | "model" | "thinking";
+export type ComposerMenuView = "root" | "model";
 
 export type PromptEnhancementError = {
   message: string;
@@ -126,11 +126,11 @@ export function thinkingProviderForModel(
   modelCatalog: readonly ModelInfo[] | undefined,
 ): ProviderPublic | null | undefined {
   if (!provider || !modelId) return provider;
-  const model = modelCatalog?.find((candidate) => modelIdsMatch(candidate.modelId, modelId));
+  const model = modelCatalog?.find((candidate) => sameComposerModelId(candidate.modelId, modelId));
   if (!model) return provider;
 
   const binding = provider.models.find((candidate) =>
-    modelIdsMatch(candidate.id, model.modelId),
+    sameComposerModelId(candidate.id, model.modelId),
   );
   const configuredLevels = binding
     ? THINKING_LEVELS.filter((level) => binding.thinkingLevels.includes(level))

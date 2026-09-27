@@ -1,4 +1,5 @@
 import { runTurnFileSummaryProbe } from "./turn-file-summary";
+import { transcriptEditProbe } from "./transcript-edit";
 import { turnProcessProbe } from "./turn-process";
 import { transcriptStatusProbe } from "./transcript-status";
 import { createRoot } from "react-dom/client";
@@ -38,6 +39,18 @@ globalThis.transcriptRenderProbe = async () => {
     lng: "en",
     resources: { en: { translation: en } },
     interpolation: { escapeValue: false },
+  });
+  // This probe asserts synchronous transcript projection and memoization. Keep
+  // the presentation animation out of that contract so rAF timing cannot hide
+  // the latest streaming fragment from the DOM assertion.
+  useAppStore.setState({
+    settings: {
+      defaultMode: "agent",
+      theme: "dark",
+      enterToSend: true,
+      onboardingDismissed: false,
+      smoothStreaming: false,
+    },
   });
   const container = document.createElement("div");
   document.body.append(container);
@@ -233,6 +246,7 @@ globalThis.transcriptRenderProbe = async () => {
       taskTimingUpdated: true,
       turnProcess: await turnProcessProbe(),
       turnFiles: await runTurnFileSummaryProbe(),
+      messageEditing: await transcriptEditProbe(),
       textUpdateDurationMs,
     };
   } finally {

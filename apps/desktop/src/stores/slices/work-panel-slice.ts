@@ -10,8 +10,10 @@ import {
   fileWorkPanelTab,
   newWorkPanelTab,
   openWorkPanelTabState,
+  reorderWorkPanelTabsState,
   replaceWorkPanelTabState,
   sanitizeWorkPanelTabsState,
+  subagentWorkPanelTab,
   switchWorkPanelContextState,
   toolWorkPanelTab,
   type WorkPanelContext,
@@ -105,8 +107,7 @@ export function createWorkPanelSlice({
   isSessionSelectionPending,
 }: WorkPanelSliceDependencies): Pick<
   AppState,
-  "toggleSubagentPanel"
-  | "closeSubagentPanel"
+  "openSubagentTab"
   | "openWorkPanel"
   | "toggleWorkPanel"
   | "openWorkPanelTab"
@@ -115,6 +116,7 @@ export function createWorkPanelSlice({
   | "openWorkPanelTabForSession"
   | "resetWorkPanelContext"
   | "activateWorkPanelTab"
+  | "reorderWorkPanelTabs"
   | "closeWorkPanelTab"
   | "collapseWorkPanel"
   | "setWorkPanelWidth"
@@ -125,21 +127,11 @@ export function createWorkPanelSlice({
   let workPanelFileRequestSeq = 0;
 
   return {
-  toggleSubagentPanel: (delegationId) => {
-    const state = get();
-    const sessionId = state.activeSessionId;
+  openSubagentTab: (delegationId, agentName) => {
     const id = delegationId.trim();
-    if (!sessionId || !id) return;
-    if (
-      state.subagentPanel?.sessionId === sessionId &&
-      state.subagentPanel.delegationId === id
-    ) {
-      set({ subagentPanel: null });
-      return;
-    }
-    set({ subagentPanel: { sessionId, delegationId: id } });
+    if (!id) return;
+    get().openWorkPanelTab(subagentWorkPanelTab(id, agentName || undefined));
   },
-  closeSubagentPanel: () => set({ subagentPanel: null }),
 
   openWorkPanel: () => {
     const state = get();
@@ -157,11 +149,6 @@ export function createWorkPanelSlice({
 
   toggleWorkPanel: () => {
     const state = get();
-    if (state.subagentPanel) {
-      state.closeSubagentPanel();
-      if (get().workPanelOpen) get().collapseWorkPanel();
-      return;
-    }
     if (state.workPanelOpen) {
       state.collapseWorkPanel();
       return;
@@ -299,6 +286,36 @@ export function createWorkPanelSlice({
       return {
         activeWorkPanelTabId: next.activeTabId,
         workPanelFileRequest: fileRequest,
+        workPanelContexts: {
+          ...state.workPanelContexts,
+          [sessionId]: nextContext,
+        },
+      };
+    });
+  },
+  reorderWorkPanelTabs: (sourceTabId, targetTabId, insertAfter) => {
+    set((state) => {
+      const sessionId = state.activeSessionId;
+      if (!sessionId) return {};
+      const next = reorderWorkPanelTabsState(
+        {
+          tabs: state.workPanelTabs,
+          activeTabId: state.activeWorkPanelTabId,
+        },
+        sourceTabId,
+        targetTabId,
+        insertAfter,
+      );
+      if (next.tabs === state.workPanelTabs) return {};
+      const nextContext: WorkPanelContext = {
+        open: state.workPanelOpen,
+        tabs: next.tabs,
+        activeTabId: next.activeTabId,
+        fileRequest: state.workPanelFileRequest,
+      };
+      return {
+        workPanelTabs: next.tabs,
+        activeWorkPanelTabId: next.activeTabId,
         workPanelContexts: {
           ...state.workPanelContexts,
           [sessionId]: nextContext,
