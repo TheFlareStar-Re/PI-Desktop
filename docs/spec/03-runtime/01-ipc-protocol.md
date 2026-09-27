@@ -1905,6 +1905,10 @@ Plugin panel chrome uses a separate Electron-local
 but the handler resolves the target strictly from the sender's live panel
 window. The preload consumes this channel internally for its closed-Shadow-DOM
 titlebar; it is not added to `window.pluginBridge` or the shared host protocol.
+
+On Windows, regular plugin panels use the same native icon as the main window
+for their taskbar entry; floating widgets have no taskbar entry.
+
 The work-panel geometry seam is retained for Electron compatibility, but the
 panel is renderer-owned and never changes native window bounds (ADR 0151):
 

@@ -5,6 +5,7 @@ import { catalogs, resolveLocale } from "@pi-desktop/i18n";
 import { isNetUrlAllowed, THEME_ASSET_SCHEME } from "@pi-desktop/plugin-sdk";
 import { builtinWindowBackground } from "@pi-desktop/shared";
 import { suppressLinuxFramelessSystemMenu } from "./frameless-system-menu";
+import { windowsIconPath } from "./windows-icon";
 import { PanelSenders, pageGoneWithin, resolvePanelInvocation } from "./plugin-panel-senders";
 import {
   isPluginPanelWindowControlAction,
@@ -480,6 +481,7 @@ export class PluginPanelHost {
       skipTaskbar: widget,
       maximizable: !widget,
       ...(widget ? { fullscreenable: false } : {}),
+      ...(process.platform === "win32" ? { icon: windowsIconPath() } : {}),
       webPreferences: {
         session: ses,
         preload: join(__dirname, "../preload/plugin-panel.js"),
